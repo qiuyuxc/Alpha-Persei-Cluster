@@ -212,6 +212,12 @@ class RechargeService:
         3. 构建符合 order_net_rec 协议之回执并返回 rewards 列表。
         """
         import uuid
+        if int(buy_id or 0) > 0:
+            from core import OperationError
+            from shop_service import goods_have_client_resources
+            rows = db.query("SELECT item_id, detail_json FROM shop_goods WHERE goods_id=?", (int(buy_id),))
+            if rows and not goods_have_client_resources(rows[0]):
+                raise OperationError(406, "该礼包缺少客户端资源，已下架")
         now_ts = int(time.time())
         num = max(1, int(num or 1))
         cfg = self.get_payment_cfg(goods_id)

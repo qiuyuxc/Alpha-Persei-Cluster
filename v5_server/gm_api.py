@@ -42,6 +42,26 @@ from gm_reader import get_reader
 # 创建 GM 统一蓝图
 gm_bp = Blueprint("gm_api", __name__)
 
+
+@gm_bp.get('/social/status')
+def get_social_status():
+    import social_service
+    return ok(social_service.status(get_db()))
+
+
+@gm_bp.post('/social/settings')
+def post_social_settings():
+    import social_service
+    import runtime_scheduler
+    try:
+        if (request.content_length or 0) > 16384:
+            raise ValueError('请求过大')
+        updated = social_service.save_settings(get_db(), request.get_json(silent=True))
+        runtime_scheduler.wake()
+        return ok(updated, msg='人机设置已保存')
+    except ValueError as error:
+        return err(GMErrorCode.PARAM_INVALID, str(error))
+
 # 全局上下文容器（由 server_net.build_https_app 注入）
 _context = {
     "core": None,
@@ -119,6 +139,8 @@ def _parse_positive_int(val, field_name, required=True):
     if val is None or val == "":
         return (None, f"缺少参数 {field_name}") if required else (None, None)
     try:
+        if isinstance(val, bool) or (isinstance(val, float) and not val.is_integer()):
+            raise ValueError("not an integer")
         parsed = int(val)
     except (ValueError, TypeError):
         return None, f"{field_name} 格式非法，必须为正整数"
@@ -626,67 +648,48 @@ def get_hero_detail():
 
 @gm_bp.route("/heroes/unlock", methods=["POST"])
 def post_unlock_hero():
-    """【写通道】委托 hero_service 解锁单体或全修正者图鉴。"""
     req = request.get_json(silent=True)
     if not isinstance(req, dict):
-        return err(GMErrorCode.PARAM_INVALID, "请求体必须为有效 JSON 对象")
-
-    uid, err_msg = _parse_uid(req.get("uid"), default=DEFAULT_UID)
-    if err_msg:
-        return err(GMErrorCode.PARAM_INVALID, err_msg)
-
-    all_heroes = bool(req.get("all", False))
-    hero_id = req.get("hero_id")
-
-    if not all_heroes and hero_id is None:
-        return err(GMErrorCode.PARAM_INVALID, "缺少 hero_id 参数，或设置 all=true 解锁全图鉴")
-
-    if hero_id is not None:
-        try:
-            hero_id = int(hero_id)
-            if hero_id <= 0:
-                return err(GMErrorCode.PARAM_OUT_OF_RANGE, "hero_id 必须为有效正整数")
-        except (ValueError, TypeError):
-            return err(GMErrorCode.PARAM_INVALID, "hero_id 格式非法，必须为整数")
-
-    db, err_resp = _require_user(uid)
-    if err_resp:
-        return err_resp
-
-    return ok({"uid": uid, "hero_id": hero_id, "all": all_heroes}, msg="修正者解锁指令已执行")
+        return err(GMErrorCode.PARAM_INVALID, "请求体必须为 JSON 对象")
+    uid, message = _parse_uid(req.get("uid"), default=DEFAULT_UID)
+    all_heroes, bool_error = _parse_bool(req.get("all"), False)
+    if message or bool_error:
+        return err(GMErrorCode.PARAM_INVALID, message or bool_error)
+    hero_id, message = _parse_positive_int(req.get("hero_id"), "hero_id", required=not all_heroes)
+    if message:
+        return err(GMErrorCode.PARAM_INVALID, message)
+    db, error = _require_user(uid)
+    if error:
+        return error
+    try:
+        import gm_actions
+        result = gm_actions.unlock(db, uid, hero_id, all_heroes)
+        return _gm_saved(result, f"已解锁 {result['unlocked_count']} 个角色，补齐 {result['unlocked_portrait_count']} 个头像")
+    except ValueError as exc:
+        return err(GMErrorCode.PARAM_INVALID, str(exc))
+    except Exception as exc:
+        return err(GMErrorCode.SERVICE_ERROR, f"解锁失败，未重复发放: {exc}")
 
 
 @gm_bp.route("/heroes/graduate", methods=["POST"])
 def post_graduate_hero():
-    """【写通道·核心神技】一键将指定修正者满级(80)、满技能(10)、Ω神格、专属5阶钥从。"""
     req = request.get_json(silent=True)
     if not isinstance(req, dict):
-        return err(GMErrorCode.PARAM_INVALID, "请求体必须为有效 JSON 对象")
-
-    uid, err_msg = _parse_uid(req.get("uid"), default=DEFAULT_UID)
-    if err_msg:
-        return err(GMErrorCode.PARAM_INVALID, err_msg)
-
-    hero_id = req.get("hero_id") or 1084
+        return err(GMErrorCode.PARAM_INVALID, "请求体必须为 JSON 对象")
+    uid, message = _parse_uid(req.get("uid"), default=DEFAULT_UID)
+    hero_id, item_error = _parse_positive_int(req.get("hero_id"), "hero_id")
+    if message or item_error:
+        return err(GMErrorCode.PARAM_INVALID, message or item_error)
+    db, error = _require_user(uid)
+    if error:
+        return error
     try:
-        hero_id = int(hero_id)
-        if hero_id <= 0:
-            return err(GMErrorCode.PARAM_OUT_OF_RANGE, "hero_id 必须为正整数")
-    except (ValueError, TypeError):
-        return err(GMErrorCode.PARAM_INVALID, "hero_id 格式非法，必须为整数")
-
-    db, err_resp = _require_user(uid)
-    if err_resp:
-        return err_resp
-
-    return ok({
-        "uid": uid,
-        "hero_id": hero_id,
-        "level": 80,
-        "grade": "Omega",
-        "skills": 10,
-        "servant": "Sync-5",
-    }, msg=f"修正者 [{hero_id}] 已一键毕业！")
+        import gm_actions
+        return _gm_saved(gm_actions.graduate(db, uid, hero_id), "基础养成已满级，刻印和钥从保持原配置")
+    except ValueError as exc:
+        return err(GMErrorCode.PARAM_INVALID, str(exc))
+    except Exception as exc:
+        return err(GMErrorCode.SERVICE_ERROR, f"角色养成操作失败: {exc}")
 
 
 # ===========================================================================
@@ -707,111 +710,77 @@ def get_inventory_items():
 
 @gm_bp.route("/inventory/add_item", methods=["POST"])
 def post_add_inventory_item():
-    """【写通道】委托 InventoryService 执行正规出入库，杜绝假成功。"""
     req = request.get_json(silent=True)
     if not isinstance(req, dict):
-        return err(GMErrorCode.PARAM_INVALID, "请求体必须为有效 JSON 对象")
-
-    uid, err_msg = _parse_uid(req.get("uid"), default=DEFAULT_UID)
-    if err_msg:
-        return err(GMErrorCode.PARAM_INVALID, err_msg)
-
-    raw_item_id = req.get("item_id")
-    if raw_item_id is None:
-        return err(GMErrorCode.PARAM_INVALID, "缺少 item_id 参数")
+        return err(GMErrorCode.PARAM_INVALID, "请求体必须为 JSON 对象")
+    uid, message = _parse_uid(req.get("uid"), default=DEFAULT_UID)
+    item_id, item_error = _parse_positive_int(req.get("item_id"), "item_id")
+    count, count_error = _parse_positive_int(req.get("num", 1), "num")
+    if message or item_error or count_error:
+        return err(GMErrorCode.PARAM_INVALID, message or item_error or count_error)
+    if count > 999999999:
+        return err(GMErrorCode.PARAM_OUT_OF_RANGE, "单次发放数量不能超过 999999999")
+    db, error = _require_user(uid)
+    if error:
+        return error
     try:
-        item_id = int(raw_item_id)
-        if item_id <= 0:
-            return err(GMErrorCode.PARAM_OUT_OF_RANGE, "item_id 必须为有效正整数")
-    except (ValueError, TypeError):
-        return err(GMErrorCode.PARAM_INVALID, "item_id 格式非法，必须为整数")
-
-    raw_num = req.get("num", 1)
-    try:
-        num = int(raw_num)
-        if num <= 0:
-            return err(GMErrorCode.PARAM_OUT_OF_RANGE, "发放道具数量必须大于 0")
-        if num > 999999999:
-            return err(GMErrorCode.PARAM_OUT_OF_RANGE, "发放道具数量超出单次上限 (999999999)")
-    except (ValueError, TypeError):
-        return err(GMErrorCode.PARAM_INVALID, "道具数量 num 格式非法，必须为整数")
-
-    db, err_resp = _require_user(uid)
-    if err_resp:
-        return err_resp
-
-    try:
-        from inventory_service import InventoryService
-        InventoryService.grant_item(db, uid, item_id, count=num, source="gm")
-    except Exception as e_svc:
-        # 降级由 account_db 执行基础货币增发
-        if hasattr(db, "add_currency"):
-            try:
-                db.add_currency(uid, item_id, num)
-            except Exception as e_db:
-                return err(GMErrorCode.SERVICE_ERROR, f"道具发放失败: {e_svc} (降级落库异常: {e_db})")
-        else:
-            return err(GMErrorCode.SERVICE_ERROR, f"道具发放失败: {e_svc}")
-
-    return ok({"uid": uid, "item_id": item_id, "num": num}, msg=f"道具 {item_id} × {num} 发放成功")
+        import gm_actions
+        return _gm_saved(gm_actions.grant(db, uid, item_id, count), f"道具 {item_id} × {count} 已处理")
+    except ValueError as exc:
+        return err(GMErrorCode.PARAM_INVALID, str(exc))
+    except Exception as exc:
+        return err(GMErrorCode.SERVICE_ERROR, f"发放失败，操作已回滚: {exc}")
 
 
 @gm_bp.route("/inventory/add_suit", methods=["POST"])
 def post_add_equip_suit():
-    """【写通道·刻印直发】一键发放指定 82 款套装的 1~6 槽位高星刻印。"""
     req = request.get_json(silent=True)
     if not isinstance(req, dict):
-        return err(GMErrorCode.PARAM_INVALID, "请求体必须为有效 JSON 对象")
-
-    uid, err_msg = _parse_uid(req.get("uid"), default=DEFAULT_UID)
-    if err_msg:
-        return err(GMErrorCode.PARAM_INVALID, err_msg)
-
-    suit_id = req.get("suit_id", 1)
+        return err(GMErrorCode.PARAM_INVALID, "请求体必须为 JSON 对象")
+    uid, message = _parse_uid(req.get("uid"), default=DEFAULT_UID)
+    suit_id, suit_error = _parse_positive_int(req.get("suit_id"), "suit_id")
+    star, star_error = _parse_positive_int(req.get("star", 5), "star")
+    count, count_error = _parse_positive_int(req.get("count", 1), "count")
+    if message or suit_error or star_error or count_error:
+        return err(GMErrorCode.PARAM_INVALID, message or suit_error or star_error or count_error)
+    if not 1 <= suit_id <= 82 or not 3 <= star <= 5 or count > 33:
+        return err(GMErrorCode.PARAM_OUT_OF_RANGE, "套装须为 1~82、星级 3~5，单次最多 33 套")
+    db, error = _require_user(uid)
+    if error:
+        return error
     try:
-        suit_id = int(suit_id)
-        if suit_id < 1 or suit_id > 82:
-            return err(GMErrorCode.PARAM_OUT_OF_RANGE, "刻印套装 ID 必须在 1~82 范围内")
-    except (ValueError, TypeError):
-        return err(GMErrorCode.PARAM_INVALID, "suit_id 格式非法，必须为整数")
-
-    star = req.get("star", 5)
-    try:
-        star = int(star)
-        if star < 3 or star > 5:
-            return err(GMErrorCode.PARAM_OUT_OF_RANGE, "刻印星级必须在 3~5 星范围内")
-    except (ValueError, TypeError):
-        return err(GMErrorCode.PARAM_INVALID, "star 格式非法，必须为整数")
-
-    db, err_resp = _require_user(uid)
-    if err_resp:
-        return err_resp
-
-    return ok({
-        "uid": uid,
-        "suit_id": suit_id,
-        "star": star,
-        "slots_generated": [1, 2, 3, 4, 5, 6],
-    }, msg=f"刻印套装 [Suit-{suit_id}] {star}★ (1~6槽位) 全套派发成功")
+        import gm_actions
+        result = gm_actions.grant_suit(db, uid, suit_id, star, count)
+        return _gm_saved(result, f"已发放 {count} 套、共 {result['generated_count']} 件刻印")
+    except ValueError as exc:
+        return err(GMErrorCode.PARAM_INVALID, str(exc))
+    except Exception as exc:
+        return err(GMErrorCode.SERVICE_ERROR, f"套装发放失败，操作已回滚: {exc}")
 
 
 @gm_bp.route("/inventory/clear", methods=["POST"])
 def post_clear_inventory():
-    """【写通道】清空玩家指定类别的背包资产。"""
     req = request.get_json(silent=True)
-    if not isinstance(req, dict):
-        return err(GMErrorCode.PARAM_INVALID, "请求体必须为有效 JSON 对象")
-
-    uid, err_msg = _parse_uid(req.get("uid"), default=DEFAULT_UID)
-    if err_msg:
-        return err(GMErrorCode.PARAM_INVALID, err_msg)
-
-    db, err_resp = _require_user(uid)
-    if err_resp:
-        return err_resp
-
-    category = req.get("category", "all")
-    return ok({"uid": uid, "category": category}, msg="背包清理操作已执行")
+    if not isinstance(req, dict) or req.get("confirm") is not True:
+        return err(GMErrorCode.PARAM_INVALID, "请先预览并明确确认清理清单")
+    uid, message = _parse_uid(req.get("uid"), default=DEFAULT_UID)
+    star, star_error = _parse_positive_int(req.get("max_star", 3), "max_star")
+    ids = req.get("instance_ids")
+    if message or star_error:
+        return err(GMErrorCode.PARAM_INVALID, message or star_error)
+    if not isinstance(ids, list) or any(type(i) is not int or i <= 0 for i in ids):
+        return err(GMErrorCode.PARAM_INVALID, "instance_ids 必须为预览获得的实例 ID 列表")
+    db, error = _require_user(uid)
+    if error:
+        return error
+    try:
+        import gm_actions
+        result = gm_actions.cleanup(db, uid, req.get("category"), star, ids)
+        return _gm_saved(result, f"已清理 {result['deleted_count']} 个闲置实例，跳过 {result['skipped_count']} 个已变更实例")
+    except ValueError as exc:
+        return err(GMErrorCode.PARAM_INVALID, str(exc))
+    except Exception as exc:
+        return err(GMErrorCode.SERVICE_ERROR, f"清理失败，操作已回滚: {exc}")
 
 
 # ===========================================================================
@@ -864,8 +833,10 @@ def _append_gm_mail_history(record):
         history = history[:200]  # 保留最近 200 条
         with open(GM_MAIL_HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
+        return True
     except Exception as e:
         print(f"[GM] 写入 gm_mail_history.json 异常: {e}")
+        return False
 
 
 @gm_bp.route("/mail/history", methods=["GET"])
@@ -906,7 +877,7 @@ def post_send_mail():
     sender = req.get("sender") or "隐科组总务部"
     title = req.get("title") or "【隐科组】战备物资补给"
     content = req.get("content") or "亲爱的管理员，战备物资已全额送达，请注意查收！"
-    attachments = req.get("attachments") or []
+    attachments = req.get("attachments", [])
 
     # 严苛字符合法性校验
     err_sender = _validate_safe_text(sender, "发件人")
@@ -924,41 +895,25 @@ def post_send_mail():
     if not isinstance(attachments, list):
         return err(GMErrorCode.PARAM_INVALID, "attachments 附件必须为数组列表")
 
-    # 规范化附件列表与受限物品校验（刻印类、试衣底片类全链路禁止邮寄）
-    norm_attachments = []
-    for it in attachments:
-        if isinstance(it, dict):
-            aid = int(it.get("id") or it.get("item_id") or 0)
-            anum = int(it.get("number") or it.get("count") or it.get("num") or 0)
-            if aid > 0 and anum > 0:
-                if (200000 <= aid <= 600000) or (830000 <= aid <= 859999):
-                    return err(GMErrorCode.PARAM_INVALID, f"物品 ID {aid} 属于刻印或刻印套装类物品，仅供图鉴展示，禁止通过邮件发送")
-                if aid == 30054 or (1000000000 <= aid <= 2000000000):
-                    return err(GMErrorCode.PARAM_INVALID, f"物品 ID {aid} 属于试衣底片类道具，未实现对应协议，仅供图鉴展示，禁止通过邮件发送")
-                norm_attachments.append({
-                    "id": aid,
-                    "name": str(it.get("name") or ""),
-                    "number": anum
-                })
-        elif isinstance(it, (list, tuple)) and len(it) >= 2:
-            aid, anum = int(it[0]), int(it[1])
-            if aid > 0 and anum > 0:
-                if (200000 <= aid <= 600000) or (830000 <= aid <= 859999):
-                    return err(GMErrorCode.PARAM_INVALID, f"物品 ID {aid} 属于刻印或刻印套装类物品，仅供图鉴展示，禁止通过邮件发送")
-                if aid == 30054 or (1000000000 <= aid <= 2000000000):
-                    return err(GMErrorCode.PARAM_INVALID, f"物品 ID {aid} 属于试衣底片类道具，未实现对应协议，仅供图鉴展示，禁止通过邮件发送")
-                norm_attachments.append({"id": aid, "name": "", "number": anum})
-
     db, err_resp = _require_user(uid)
     if err_resp:
         return err_resp
 
     now_ts = int(time.time())
+    from mail_service import normalize_attachments, resolve_expiry
+    try:
+        norm_attachments = normalize_attachments(attachments, db)
+        expiry = resolve_expiry(req.get('expire_time'), req.get('valid_days'), now_ts)
+    except ValueError as error:
+        return err(GMErrorCode.PARAM_INVALID, str(error))
     now_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_ts))
 
     if hasattr(db, "send_gm_mail"):
         try:
-            mid = db.send_gm_mail(uid, title, content, norm_attachments, sender=sender)
+            with db.transaction(immediate=True):
+                mid = db.send_gm_mail(uid, title, content, norm_attachments, sender=sender, expire_time=expiry)
+                if not mid:
+                    raise ValueError('邮件未成功入库')
             record = {
                 "id": int(now_ts * 1000),
                 "mail_id": mid,
@@ -969,10 +924,15 @@ def post_send_mail():
                 "attachments": norm_attachments,
                 "attachments_count": len(norm_attachments),
                 "sent_at": now_ts,
+                "expire_time": expiry,
                 "sent_at_str": now_str,
                 "status": "已入库"
             }
-            _append_gm_mail_history(record)
+            audit_saved = True
+            try:
+                audit_saved = _append_gm_mail_history(record) is not False
+            except Exception:
+                audit_saved = False
 
             # 主动向在线游戏长连接推送邮件红点通知帧 sc_30001
             pushed = False
@@ -990,33 +950,85 @@ def post_send_mail():
                 "title": title,
                 "attachments_count": len(norm_attachments),
                 "sent_at": now_ts,
+                "expire_time": expiry,
                 "pushed": pushed,
+                "audit_saved": audit_saved,
             }, msg=msg)
         except Exception as e:
             return err(GMErrorCode.DB_EXEC_FAILED, f"发送邮件异常: {e}")
 
-    record = {
-        "id": int(now_ts * 1000),
-        "mail_id": 99999,
-        "uid": uid,
-        "sender": sender,
-        "title": title,
-        "content": content,
-        "attachments": norm_attachments,
-        "attachments_count": len(norm_attachments),
-        "sent_at": now_ts,
-        "sent_at_str": now_str,
-        "status": "已模拟发送"
-    }
-    _append_gm_mail_history(record)
+    return err(GMErrorCode.SERVICE_ERROR, '邮件服务不可用')
 
-    return ok({
-        "mail_id": 99999,
-        "uid": uid,
-        "sender": sender,
-        "title": title,
-        "pushed": False,
-    }, msg="邮件已模拟发送")
+
+@gm_bp.route('/automation/status', methods=['GET'])
+def get_automation_status():
+    import game_cycles
+    import mail_automation
+    import runtime_scheduler
+    db = get_db()
+    if db is None:
+        return err(GMErrorCode.DB_NOT_READY, '数据库连接未就绪')
+    try:
+        return ok({**game_cycles.get_status(db), 'mail_rules': mail_automation.get_rules(db),
+                   'scheduler': runtime_scheduler.status()})
+    except Exception as error:
+        return err(GMErrorCode.SERVICE_ERROR, f'读取自动化配置失败: {error}')
+
+
+@gm_bp.route('/automation/schedule', methods=['POST'])
+def post_automation_schedule():
+    import game_cycles
+    import runtime_scheduler
+    req = request.get_json(silent=True)
+    db = get_db()
+    if db is None:
+        return err(GMErrorCode.DB_NOT_READY, '数据库连接未就绪')
+    try:
+        with db.transaction(immediate=True):
+            game_cycles.save_settings(db, req)
+            rotation = game_cycles.apply_rotation(db)
+        sync = {'clients': 0}
+        if rotation['enabled'] and not rotation['waiting'] and rotation['notify_required']:
+            try:
+                sync = runtime_scheduler.notify_rotation(db)
+                game_cycles.rotation_notified(db, rotation)
+            except Exception:
+                sync['pending'] = True
+        runtime_scheduler.wake()
+        return ok({**game_cycles.get_status(db), 'sync': sync}, '周期配置已保存')
+    except ValueError as error:
+        return err(GMErrorCode.PARAM_INVALID, str(error))
+    except Exception as error:
+        return err(GMErrorCode.SERVICE_ERROR, f'保存周期配置失败: {error}')
+
+
+@gm_bp.route('/mail/rules', methods=['GET'])
+def get_level_mail_rules():
+    import mail_automation
+    try:
+        return ok({'rules': mail_automation.get_rules(get_db())})
+    except Exception as error:
+        return err(GMErrorCode.SERVICE_ERROR, f'读取等级邮件规则失败: {error}')
+
+
+@gm_bp.route('/mail/rules', methods=['POST'])
+def post_level_mail_rule():
+    import mail_automation
+    import runtime_scheduler
+    db = get_db()
+    if db is None:
+        return err(GMErrorCode.DB_NOT_READY, '数据库连接未就绪')
+    try:
+        if not isinstance(request.get_json(silent=True), dict):
+            raise ValueError('等级邮件规则须为有效 JSON 对象')
+        mail_automation.initialize(db)
+        rule = mail_automation.save_rule(db, request.get_json(silent=True))
+        runtime_scheduler.wake()
+        return ok(rule, '等级邮件规则已保存，启用的规则将自动检查发放')
+    except ValueError as error:
+        return err(GMErrorCode.PARAM_INVALID, str(error))
+    except Exception as error:
+        return err(GMErrorCode.SERVICE_ERROR, f'保存等级邮件规则失败: {error}')
 
 
 # ===========================================================================
@@ -1032,6 +1044,15 @@ def get_gacha_pools():
         return err(GMErrorCode.PARAM_INVALID, err_msg)
     reader = get_reader()
     data = reader.get_gacha_pools_view(uid)
+    import draw_rules
+    rules = draw_rules.get_all(reader)
+    data["rules"] = rules
+    for group, state in data.get("pity_states", {}).items():
+        if group in rules:
+            state["pity_cap"] = rules[group]["hard_pity"]
+    for pool in data.get("pools", []):
+        if pool.get("type") in rules:
+            pool["pity_cap"] = rules[pool["type"]]["hard_pity"]
     return ok(data)
 
 
@@ -1104,6 +1125,8 @@ def post_set_gacha_pity():
 
     raw_count = req.get("count") if "count" in req else req.get("pity_count", req.get("since_ssr", 69))
     try:
+        if isinstance(raw_count, bool) or (isinstance(raw_count, float) and not raw_count.is_integer()):
+            raise ValueError("not an integer")
         pity_count = int(raw_count)
     except (ValueError, TypeError):
         return err(GMErrorCode.PARAM_INVALID, "保底抽数 count 格式非法，必须为整数")
@@ -1130,13 +1153,16 @@ def post_set_gacha_pity():
         elif series == "destiny":
             series = "hero_precision_90"
 
-        max_cap = 90 if series == "hero_precision_90" else 70
+        max_cap = svc.get_rules(str(series))["hard_pity"]
         if pity_count < 0 or pity_count > max_cap:
             return err(GMErrorCode.PARAM_OUT_OF_RANGE, f"保底垫刀抽数必须在 0~{max_cap} 范围内")
 
         is_up_guaranteed = req.get("is_up_guaranteed")
         if is_up_guaranteed is not None:
-            is_up_guaranteed = 1 if bool(is_up_guaranteed) else 0
+            parsed, parse_error = _parse_bool(is_up_guaranteed)
+            if parse_error:
+                return err(GMErrorCode.PARAM_INVALID, parse_error)
+            is_up_guaranteed = 1 if parsed else 0
 
         svc.set_pity(uid, str(series), pity_count, is_up_guaranteed=is_up_guaranteed)
     except Exception as e:
@@ -1753,30 +1779,31 @@ def post_aichat_trigger_greeting():
 
 @gm_bp.route("/server/backup_db", methods=["POST"])
 def post_backup_db():
-    """【写通道·安全铁律】一键创建带时间戳的 SQLite account.db 安全快照。"""
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    import sqlite3
+    import uuid
+    from contextlib import closing
     db = get_db()
-    db_file = getattr(db, 'path', os.path.join(base_dir, "account.db"))
-    backup_dir = os.path.join(base_dir, "db_backup")
+    if db is None or not os.path.isfile(getattr(db, "path", "")):
+        return err(GMErrorCode.DB_NOT_READY, "数据库连接未就绪")
+    backup_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db_backup")
     os.makedirs(backup_dir, exist_ok=True)
-
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    backup_filename = f"account_backup_gm_api_{timestamp}.db"
-    dest_path = os.path.join(backup_dir, backup_filename)
-
-    if not os.path.isfile(db_file):
-        return err(GMErrorCode.NOT_FOUND, f"源数据库文件 [{os.path.basename(db_file)}] 不存在")
-
+    name = f"account_backup_gm_api_{timestamp}_{uuid.uuid4().hex[:8]}.db"
+    target = os.path.join(backup_dir, name)
     try:
-        shutil.copy2(db_file, dest_path)
-        return ok({
-            "backup_filename": backup_filename,
-            "backup_path": dest_path,
-            "size_bytes": os.path.getsize(dest_path),
-            "timestamp": timestamp,
-        }, msg="数据库快照备份成功")
-    except Exception as e:
-        return err(GMErrorCode.SERVICE_ERROR, f"备份数据库失败: {e}")
+        from pathlib import Path
+        with closing(sqlite3.connect(Path(db.path).resolve().as_uri() + "?mode=ro", uri=True)) as source:
+            with closing(sqlite3.connect(target)) as destination:
+                source.backup(destination)
+                if destination.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise ValueError("备份完整性检查失败")
+        os.chmod(target, 0o600)
+        return ok({"backup_filename": name, "backup_path": target,
+                   "size_bytes": os.path.getsize(target), "timestamp": timestamp}, msg="数据库在线快照备份成功")
+    except Exception as exc:
+        if os.path.exists(target):
+            os.remove(target)
+        return err(GMErrorCode.SERVICE_ERROR, f"备份失败: {exc}")
 
 
 @gm_bp.route("/server/toggle_capture", methods=["GET", "POST"])
@@ -1808,7 +1835,16 @@ def toggle_capture_mode():
 @gm_bp.route("/server/hot_reload", methods=["POST"])
 def post_hot_reload():
     """热重载服务配置。"""
-    return ok({"reloaded_modules": ["notice_cfg", "draw_service", "gm_api", "gm_reader", "shop_service"]}, msg="配置已热重载")
+    import inventory_service
+    from draw_service import DrawService
+    # Refresh data caches, not live Python modules or registered event listeners.
+    for name in ("_EQUIP_MAP_CACHE", "_USER_LEVEL_SETTINGS_CACHE", "_ITEM_USABLE_CFG_CACHE",
+                 "_DROP_CFG_CACHE", "_ITEM_EXCHANGE_CFG_CACHE", "_STICKER_ITEM_MAP_CACHE"):
+        setattr(inventory_service, name, None)
+    if DrawService._instance is not None:
+        DrawService._instance._pool_activity_cfg = None
+    return ok({"reloaded_modules": ["inventory_service", "draw_service"], "code_restart_required": True},
+              msg="物品和卡池配置缓存已刷新；Python 代码更新仍需重启服务")
 
 
 @gm_bp.route("/system/res_version", methods=["GET"])
@@ -2629,3 +2665,56 @@ def regenerate_cert_api():
 
 
 
+
+
+def _gm_saved(result, message):
+    state = result.get("sync", {})
+    if state.get("requires_relogin"):
+        message += "；已落库，重新登录游戏后生效"
+    elif state.get("clients", 0):
+        message += "；已同步在线游戏"
+    return ok(result, msg=message)
+
+
+@gm_bp.route("/inventory/cleanup_preview", methods=["GET"])
+def get_inventory_cleanup_preview():
+    uid, message = _parse_uid(request.args.get("uid"), default=DEFAULT_UID)
+    star, star_error = _parse_positive_int(request.args.get("max_star", 3), "max_star")
+    if message or star_error:
+        return err(GMErrorCode.PARAM_INVALID, message or star_error)
+    db, error = _require_user(uid)
+    if error:
+        return error
+    try:
+        import gm_actions
+        category = request.args.get("category", "equip")
+        items = gm_actions.cleanup_candidates(db, uid, category, star)
+        return ok({"uid": uid, "category": category, "max_star": star, "items": items, "count": len(items)})
+    except ValueError as exc:
+        return err(GMErrorCode.PARAM_INVALID, str(exc))
+    except Exception as exc:
+        return err(GMErrorCode.SERVICE_ERROR, f"预览失败: {exc}")
+
+
+@gm_bp.route("/gacha/rules", methods=["GET", "POST"])
+def gacha_rules():
+    import draw_rules
+    db = get_db()
+    if db is None:
+        return err(GMErrorCode.DB_NOT_READY, "数据库连接未就绪")
+    if request.method == "GET":
+        return ok({"rules": draw_rules.get_all(db),
+                   "defaults": {g: draw_rules.defaults(g) for g in draw_rules.GROUPS}})
+    req = request.get_json(silent=True)
+    if not isinstance(req, dict):
+        return err(GMErrorCode.PARAM_INVALID, "请求体必须为 JSON 对象")
+    reset, message = _parse_bool(req.get("reset"), False)
+    if message:
+        return err(GMErrorCode.PARAM_INVALID, message)
+    try:
+        rule = draw_rules.save(db, req.get("group"), req.get("rules"), reset=reset)
+        return ok({"group": req["group"], "rules": rule}, msg="抽卡规则已保存，下次抽取生效，保底进度保留")
+    except (ValueError, TypeError) as exc:
+        return err(GMErrorCode.PARAM_INVALID, str(exc))
+    except Exception as exc:
+        return err(GMErrorCode.SERVICE_ERROR, f"保存抽卡规则失败: {exc}")

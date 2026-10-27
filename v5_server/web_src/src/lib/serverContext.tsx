@@ -4,6 +4,7 @@ import {
   fetchResVersion,
   switchResVersion,
   getActiveUid,
+  hasStoredActiveUid,
   setActiveUid as saveActiveUid,
   fetchServerZones,
   updateServerZones,
@@ -170,7 +171,7 @@ export function ServerProvider({ children }: { children: ReactNode }) {
         setIsOnline(true)
         if (
           res.data.default_uid &&
-          (!localStorage.getItem('gm_active_uid') || localStorage.getItem('gm_active_uid') === '10001')
+          !hasStoredActiveUid()
         ) {
           setActiveUid(res.data.default_uid)
         }

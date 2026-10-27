@@ -1129,8 +1129,20 @@ class PeripheralService:
                      for s in (scenes or [])]
 
         # 2. 读取原始模板
-        lp = db.query("SELECT payload FROM login_push WHERE cmd=32009")
+        from fresh_profile import is_fresh
+        fresh = is_fresh(db, uid)
+        lp = [] if fresh else db.query("SELECT payload FROM login_push WHERE cmd=32009")
         obj = None
+        if fresh:
+            from schema_default import default_obj
+            # Build 321's avatar settings always call GetCurAppIcon(), which reads
+            # game_icon[1] when no local icon preference exists. ItemCfg 12001 is
+            # the initial app icon; new accounts must not inherit earned icons.
+            obj = default_obj("sc_32009", {"icon": 2110841, "icon_frame": 2001,
+                "information_background_id": 8001, "chat_bubble": 9001,
+                "poster_background_id": 6000, "sticker_background": 4002,
+                "game_icon": [{"id": 12001, "lasted_time": 0, "obtain_time": 0}],
+                "poster_background_list": [{"id": 6000, "lasted_time": 0, "obtain_time": 0}]})
         if lp and lp[0]["payload"]:
             try:
                 obj = decode(lp[0]["payload"], "sc_32009")
@@ -1355,7 +1367,8 @@ class PeripheralService:
     def get_birthday_push_payload(self, uid, db):
         """sc_12033 生日登录推送。动态读取 game_user.birth_month 与 birth_day，默认 10月28日。"""
         from codec import encode
-        month, day = 10, 28
+        from fresh_profile import is_fresh
+        month, day = (0, 0) if is_fresh(db, uid) else (10, 28)
         try:
             rows = db.query("SELECT birth_month, birth_day FROM game_user WHERE uid=?", (uid,))
             if rows:

@@ -30,6 +30,7 @@ import logging
 import os
 import random
 import time
+import draw_rules
 
 from middleware import DownFrame
 
@@ -286,6 +287,7 @@ class DrawService:
     def __init__(self, db=None):
         self.db = db
         self._pool_up_cfg = None
+        self._default_pool_cfg = None
         self._init_db_schema()
         try:
             import res_version_manager
@@ -344,6 +346,17 @@ class DrawService:
             """)
             self.db.execute("CREATE INDEX IF NOT EXISTS idx_draw_record_uid_group ON draw_record(uid, pool_group, id DESC)")
             self.db.execute("CREATE INDEX IF NOT EXISTS idx_draw_record_uid_pool ON draw_record(uid, pool_id, id DESC)")
+            # The default active list includes newer selectable pools absent from
+            # release databases. Seed their client definitions without overwriting
+            # custom pools, selected targets, draw history, or pity counters.
+            with self.db.transaction():
+                for pid, cfg in self.load_default_pool_cfg().items():
+                    group = self.get_pool_group(int(pid), cfg)
+                    self.db.execute(
+                        "INSERT INTO draw_pool(pool_id,name,pool_type,ssr_rate,detail_json) VALUES(?,?,?,?,?) "
+                        "ON CONFLICT(pool_id) DO NOTHING",
+                        (int(pid), cfg['name'], cfg['pool_type'], draw_rules.defaults(group)['ssr_rate'] * 100,
+                         json.dumps(cfg, ensure_ascii=False)))
             cnt = self.db.query("SELECT COUNT(*) AS c FROM active_draw_pool")
             if not cnt or cnt[0]["c"] == 0:
                 now = int(time.time())
@@ -358,6 +371,13 @@ class DrawService:
             logger.warning(f"[DrawService] 初始化 active_draw_pool / draw_record 数据表异常: {e}")
 
     # ==================== 卡池元数据与分类判定 ====================
+
+    def load_default_pool_cfg(self):
+        if self._default_pool_cfg is None:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'choice_pool_defaults.json')
+            with open(path, encoding='utf-8') as source:
+                self._default_pool_cfg = json.load(source)
+        return self._default_pool_cfg
 
     def load_pool_up_cfg(self):
         """加载 pool_up_config.json 静态配置"""
@@ -524,47 +544,16 @@ class DrawService:
 
     # ==================== 概率与软保底动态计算引擎 ====================
 
-    @staticmethod
-    def calc_ssr_prob(pool_group, since_ssr):
-        """计算当前第 since_ssr 抽的 SSR (S级修正者/5星钥从) 动态命中概率（含软保底平滑爬升）
-        官方公示基础概率: 1.60%, 含保底综合出率: 2.40%
-        1. 70 抽系列 (hero_precision_70, hero_standard_70, weapon_servant_70):
-           - 1 ~ 65 抽: 1.60% 基础出率
-           - 66 ~ 69 抽: 软保底线性阶梯爬升 (递增约 19.68% / 抽)
-           - 70 抽: 100.0% 硬保底必出
-           -> 模拟大样本收敛值严格稳定于 2.40% ~ 2.44%
-        2. 90 抽系列 (hero_precision_90):
-           - 1 ~ 80 抽: 1.60% 基础出率
-           - 81 ~ 89 抽: 软保底线性阶梯爬升 (递增约 9.84% / 抽)
-           - 90 抽: 100.0% 硬保底必出
-        """
-        if pool_group == "hero_precision_90":
-            if since_ssr >= 90:
-                return 1.0
-            elif since_ssr <= 80:
-                return BASE_RATE_SSR
-            else:
-                return BASE_RATE_SSR + (since_ssr - 80) * ((1.0 - BASE_RATE_SSR) / (90 - 80))
-        else:
-            if since_ssr >= 70:
-                return 1.0
-            elif since_ssr <= 65:
-                return BASE_RATE_SSR
-            else:
-                return BASE_RATE_SSR + (since_ssr - 65) * ((1.0 - BASE_RATE_SSR) / (70 - 65))
+    def get_rules(self, pool_group):
+        return draw_rules.get_rules(self.db, pool_group)
 
     @staticmethod
-    def calc_sr_prob(pool_group, since_sr):
-        """计算当前第 since_sr 抽的 SR (A级修正者/4星钥从) 命中概率
-        - 角色池基础出率: 7.80% (综合 14.00%)
-        - 钥从池基础出率: 11.08% (综合 16.00%)
-        - since_sr >= 10: 100.0% 保底必出
-        """
-        if since_sr >= 10:
-            return 1.0
-        if pool_group == "weapon_servant_70":
-            return BASE_RATE_SR_WEAPON
-        return BASE_RATE_SR_HERO
+    def calc_ssr_prob(pool_group, since_ssr, rules=None):
+        return draw_rules.ssr_probability(pool_group, since_ssr, rules)
+
+    @staticmethod
+    def calc_sr_prob(pool_group, since_sr, rules=None):
+        return draw_rules.sr_probability(pool_group, since_sr, rules)
 
     # ==================== 保底与卡池状态存取 ====================
 
@@ -724,6 +713,8 @@ class DrawService:
         else:
             cost_id = int(dj.get("cost_id", 38))
             cost_num = int(dj.get("cost_ten", 10) if dtype == 10 else dj.get("cost_once", 1))
+        rules = self.get_rules(self.get_pool_group(pool_id, dj))
+        cost_num = draw_rules.draw_cost(cost_num, rules)
         cnt = self._item_balance(uid, cost_id)
         if cnt < cost_num:
             return False, f"抽卡道具不足（需 {cost_num}，持有 {cnt}）"
@@ -803,7 +794,7 @@ class DrawService:
             a_other_item = list(ALL_A_DRAW_ITEMS)
             b_item = list(BASE_B_DRAW_ITEMS)
         elif pool_group == "hero_precision_70":
-            s_up_probability = 50  # 50% 出本期 UP
+            s_up_probability = round(self.get_rules(pool_group)["up_rate"] * 100)
             target_hero = target_up_s if target_up_s else 1083
             target_did = DRAW_ITEM_LTD_S.get(target_hero) or DRAW_ITEM_STD_S.get(target_hero, 2050)
             s_up_item = [target_did]
@@ -836,7 +827,7 @@ class DrawService:
                     # 自选常驻探测：DRAW_POOL_DESC_TEMP_11 客户端要求 s_up_item[1] 存在于 DrawItemCfg
                     s_up_probability = 100
                     s_up_item = [default_std_did]
-                    s_other_item = [did for h, did in DRAW_ITEM_STD_S.items() if did != default_did]
+                    s_other_item = [did for h, did in DRAW_ITEM_STD_S.items() if did != default_std_did]
                 else:
                     s_up_probability = 0
                     s_up_item = []
@@ -869,8 +860,10 @@ class DrawService:
             rows = self.db.query("SELECT pool_id FROM active_draw_pool WHERE is_active=1 ORDER BY sort_order, pool_id")
             if rows:
                 pids = [r["pool_id"] for r in rows]
-            else:
+            elif not self.db.query('SELECT 1 FROM active_draw_pool LIMIT 1'):
                 pids = list(DEFAULT_ACTIVE_POOLS)
+            else:
+                pids = []
 
         if res_version is not None and str(res_version) == "229":
             cfg = self.load_pool_activity_cfg()
@@ -881,21 +874,26 @@ class DrawService:
             ]
         return pids
 
-    def set_active_pools(self, pool_ids):
+    def set_active_pools(self, pool_ids, now_ts=None):
         """设置上架的卡池列表（覆盖现有活跃池），并联动激活对应卡池活动"""
         if self.db is None:
             return False, "数据库不可用"
-        now = int(time.time())
+        now = int(time.time()) if now_ts is None else int(now_ts)
         try:
-            self.db.execute("UPDATE active_draw_pool SET is_active=0")
-            for idx, pid in enumerate(pool_ids):
-                self.db.execute(
-                    "INSERT INTO active_draw_pool (pool_id, sort_order, is_active, update_ts) VALUES (?, ?, 1, ?) "
-                    "ON CONFLICT(pool_id) DO UPDATE SET is_active=1, sort_order=excluded.sort_order, update_ts=excluded.update_ts",
-                    (int(pid), idx + 1, now)
-                )
-            # 联动同步激活在架卡池对应的活动，解除客户端时间锁
-            self.sync_active_pool_activities()
+            from account_db import savepoint_transaction
+            with savepoint_transaction(self.db, immediate=True):
+                pool_ids = [int(pid) for pid in pool_ids]
+                available = {int(r['pool_id']) for r in self.db.query('SELECT pool_id FROM draw_pool')}
+                if len(pool_ids) != len(set(pool_ids)) or set(pool_ids) - available:
+                    raise ValueError('卡池清单含重复或不存在的卡池')
+                self.db.execute("UPDATE active_draw_pool SET is_active=0")
+                for idx, pid in enumerate(pool_ids):
+                    self.db.execute(
+                        "INSERT INTO active_draw_pool (pool_id, sort_order, is_active, update_ts) VALUES (?, ?, 1, ?) "
+                        "ON CONFLICT(pool_id) DO UPDATE SET is_active=1, sort_order=excluded.sort_order, update_ts=excluded.update_ts",
+                        (pid, idx + 1, now)
+                    )
+                self.sync_active_pool_activities(now_ts=now)
             return True, f"成功上架 {len(pool_ids)} 个卡池"
         except Exception as e:
             return False, str(e)
@@ -912,7 +910,7 @@ class DrawService:
                 self._pool_activity_cfg = {}
         return self._pool_activity_cfg
 
-    def get_active_activity_entries(self, uid=None, res_version=None):
+    def get_active_activity_entries(self, uid=None, res_version=None, now_ts=None):
         """获取当前活跃在架卡池对应的活动条目列表，供 sc_11001 动态下发，解除卡池活动时间锁与置灰。"""
         cfg = self.load_pool_activity_cfg()
         pids = self.get_active_pools(uid=uid, res_version=res_version)
@@ -924,60 +922,48 @@ class DrawService:
                 aid = int(item["activity_id"])
                 if aid not in seen_acts:
                     seen_acts.add(aid)
+                    from game_cycles import pool_window
+                    start, end = pool_window(self.db, pid, now_ts) if self.db is not None else (0, 2440962000)
                     entries.append({
                         "activity_id": aid,
                         "name": item.get("name", ""),
                         "theme": int(item.get("theme", 0)),
                         "template": int(item.get("template", 3)),
-                        "start_time": 0,
-                        "stop_time": 2440962000,
+                        "start_time": start,
+                        "stop_time": end,
                         "state": 1,
                         "sub_activity_id_list": []
                     })
         return entries
 
-    def sync_active_pool_activities(self, uid=None):
+    def sync_active_pool_activities(self, uid=None, now_ts=None):
         """将当前活跃卡池对应的活动同步至 activity 表，保障时间窗口激活；并将已下架卡池的活动置为 0，防止主界面 Banner 轮播噪点与 229 白屏"""
         if self.db is None:
             return
         cfg = self.load_pool_activity_cfg()
         all_pool_aids = {int(item["activity_id"]) for item in cfg.values() if item.get("activity_id")}
 
-        uids = [uid] if uid is not None else []
-        if not uids:
-            try:
-                rows = self.db.query("SELECT DISTINCT uid FROM activity")
-                uids = [r["uid"] for r in rows if r.get("uid")]
-            except Exception:
-                pass
-            if not uids:
-                uids = [2174928301]
+        uids = [uid] if uid is not None else [r['uid'] for r in self.db.query('SELECT DISTINCT uid FROM activity')]
 
         for u in uids:
-            entries = self.get_active_activity_entries(u)
+            entries = self.get_active_activity_entries(u, now_ts=now_ts)
             active_aids = {ent["activity_id"] for ent in entries}
 
             for ent in entries:
-                try:
-                    self.db.execute(
-                        "INSERT INTO activity (uid, activity_id, name, start_time, stop_time, state, theme, template, sub_activity_id_list, update_ts) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0) "
-                        "ON CONFLICT(uid, activity_id) DO UPDATE SET state=1, stop_time=2440962000",
-                        (u, ent["activity_id"], ent["name"], ent["start_time"], ent["stop_time"], ent["state"], ent["theme"], ent["template"])
-                    )
-                except Exception as e:
-                    logger.debug(f"[DrawService] 同步卡池活动到 activity 表异常: {e}")
+                self.db.execute(
+                    "INSERT INTO activity (uid, activity_id, name, start_time, stop_time, state, theme, template, sub_activity_id_list, update_ts) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0) "
+                    "ON CONFLICT(uid, activity_id) DO UPDATE SET state=1,start_time=excluded.start_time,stop_time=excluded.stop_time",
+                    (u, ent["activity_id"], ent["name"], ent["start_time"], ent["stop_time"], ent["state"], ent["theme"], ent["template"])
+                )
 
             inactive_aids = all_pool_aids - active_aids
             if inactive_aids:
-                try:
-                    placeholders = ",".join("?" * len(inactive_aids))
-                    self.db.execute(
-                        f"UPDATE activity SET state=0 WHERE uid=? AND activity_id IN ({placeholders})",
-                        (u, *inactive_aids)
-                    )
-                except Exception as e:
-                    logger.debug(f"[DrawService] 下架卡池活动状态置零异常: {e}")
+                placeholders = ",".join("?" * len(inactive_aids))
+                self.db.execute(
+                    f"UPDATE activity SET state=0 WHERE uid=? AND activity_id IN ({placeholders})",
+                    (u, *inactive_aids)
+                )
 
     def sanitize_pools_for_version(self, target_version):
         """
@@ -1070,6 +1056,11 @@ class DrawService:
         """执行单抽或十连抽卡核心逻辑，返回封装好的全部下行帧"""
         pool_id = int(pool_id)
         dtype = int(dtype)
+        import game_cycles
+        import res_version_manager
+        game_cycles.apply_rotation(self.db)
+        if pool_id not in self.get_active_pools(res_version=res_version_manager.get_current_version()):
+            raise ValueError('该卡池已下架，请刷新探测页面')
         pool = self.db.query("SELECT * FROM draw_pool WHERE pool_id=?", (pool_id,))
         if not pool:
             raise ValueError(f"抽卡池 {pool_id} 不存在")
@@ -1087,6 +1078,9 @@ class DrawService:
             cost_id = int(dj.get("cost_id", 38))
             cost_num = int(dj.get("cost_ten", 10) if dtype == 10 else dj.get("cost_once", 1))
 
+        pool_group = self.get_pool_group(pool_id, dj)
+        rules = self.get_rules(pool_group)  # One immutable rule snapshot for this batch.
+        cost_num = draw_rules.draw_cost(cost_num, rules)
         # 验资
         cnt = self._item_balance(uid, cost_id)
         if cnt < cost_num:
@@ -1106,7 +1100,7 @@ class DrawService:
         up_id = state["up_id"]
 
         is_keyong_pool = (pool_group == "weapon_servant_70")
-        pity_threshold = 90 if (pool_group == "hero_precision_90") else 70
+        pity_threshold = rules["hard_pity"]
 
         # 获取 UP S 角色
         pool_cfg_all = self.load_pool_up_cfg()
@@ -1145,7 +1139,7 @@ class DrawService:
             since_sr += 1
             total_draws += 1
 
-            prob_ssr = self.calc_ssr_prob(pool_group, since)
+            prob_ssr = self.calc_ssr_prob(pool_group, since, rules)
             is_ssr = (random.random() < prob_ssr) or (since >= pity_threshold)
 
             if is_ssr:
@@ -1166,7 +1160,7 @@ class DrawService:
                     if pool_group == "hero_precision_90":
                         chosen_hero = target_up if target_up else random.choice(LIMITED_S_HEROES)
                     elif pool_group == "hero_precision_70":
-                        if is_up_guaranteed or random.random() < 0.5:
+                        if is_up_guaranteed or random.random() < rules["up_rate"]:
                             chosen_hero = target_up if target_up else random.choice(LIMITED_S_HEROES)
                             is_up_guaranteed = 0
                         else:
@@ -1208,8 +1202,8 @@ class DrawService:
                             "convert_from": {"id": chosen_hero, "num": 1}
                         })
             else:
-                prob_sr = self.calc_sr_prob(pool_group, since_sr)
-                is_sr = (since_sr >= 10) or (random.random() < prob_sr)
+                prob_sr = self.calc_sr_prob(pool_group, since_sr, rules)
+                is_sr = (since_sr >= rules["sr_pity"]) or (random.random() < prob_sr)
                 if is_sr:
                     since_sr = 0
                     if is_keyong_pool:

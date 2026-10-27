@@ -406,10 +406,12 @@ def get_mythic_data(uid, db):
             ]
         })
         
-    user_diff = 10 # 默认选中难度 10 (可自由切换 1~13 档)
+    from fresh_profile import is_fresh
+    fresh = bool(db and is_fresh(db, uid))
+    user_diff = 1 if fresh else 10 # 默认选中难度 10 (可自由切换 1~13 档)
     claimed_star_rewards = []
     clear_partitions = []
-    main_stars = [1, 2, 3]
+    main_stars = [] if fresh else [1, 2, 3]
     
     if db:
         try:
@@ -429,6 +431,8 @@ def get_mythic_data(uid, db):
             p_rows = db.query("SELECT partition_id, star FROM mythic_progress_partition WHERE uid=?", (uid,))
             if p_rows:
                 clear_partitions = [r["partition_id"] for r in p_rows]
+                if fresh:
+                    main_stars = list(range(1, 1 + max([int(r["star"] or 0) for r in p_rows if r["partition_id"] == user_diff] or [0])))
         except Exception:
             pass
 
@@ -451,7 +455,7 @@ def get_mythic_data(uid, db):
     
     # sc_44019: 已开放难度与当前选中难度
     sc_44019_obj = {
-        "open_difficulty_list": [1001, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+        "open_difficulty_list": list(range(1, min(13, max([p for p in clear_partitions if p <= 13] or [0]) + 1) + 1)) if fresh else [1001, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
         "difficulty": user_diff,
         "is_new_difficulty": False
     }
@@ -503,6 +507,8 @@ def get_polyhedron_data(uid, db, res_version=None):
     返回多维变量当期动态数据：
     - sc_18001: 完整多维变量大厅与终端数据（由 account.db 动态驱动）
     """
+    from fresh_profile import is_fresh
+    fresh = is_fresh(db, uid)
     now = int(time.time())
     import res_version_manager
     activity_id = int(res_version_manager.get_version_config(res_version)["polyhedron_activity_id"])
@@ -517,7 +523,7 @@ def get_polyhedron_data(uid, db, res_version=None):
             "astrolabe_id_list": astros
         })
     if not unlocked_heroes:
-        default_init_heroes = [1084, 1094, 1284]
+        default_init_heroes = [1084] if fresh else [1084, 1094, 1284]
         for hid in default_init_heroes:
             unlocked_heroes.append({"hero_id": hid, "astrolabe_id_list": []})
             db.upsert("polyhedron_hero", uid, {
@@ -568,6 +574,16 @@ def get_polyhedron_data(uid, db, res_version=None):
             {"id": 70704, "state": 2}, {"id": 70610, "state": 1}, {"id": 70615, "state": 1},
             {"id": 70609, "state": 2}, {"id": 109402, "state": 1}, {"id": 109401, "state": 2}
         ]
+
+    if fresh:
+        if not beacon_rows:
+            beacon_id_list = []
+        if not term_rows:
+            terminal_upgrades = []
+        if not diff_rows:
+            clear_difficulties = []
+        if not art_rows:
+            manual_samples = []
 
     # 6. 历程周期性刷新检测（仅重置维度偏移 Currency 45 与已领取记录）
     try:

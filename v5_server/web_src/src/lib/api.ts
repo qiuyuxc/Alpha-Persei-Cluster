@@ -367,7 +367,13 @@ export interface InventoryItemEntry {
   id: number
   num: number
   name?: string
-  type?: number
+  type?: number | string
+  item_type?: number
+  rare?: number
+  instance_id?: number
+  level?: number
+  star?: number
+  locked?: boolean
 }
 
 export interface MailEntry {
@@ -387,11 +393,14 @@ export interface GachaPoolEntry {
 }
 
 // 本地存储 key
+const SUB_GM = typeof document !== 'undefined' && document.documentElement.dataset.gmMode === 'sub'
 const STORAGE_KEY_API_BASE = 'gm_api_base'
-const STORAGE_KEY_ACTIVE_UID = 'gm_active_uid'
+const STORAGE_KEY_ACTIVE_UID = SUB_GM ? 'sub_gm_active_uid' : 'gm_active_uid'
 
 export function getStoredApiBase(): string {
   if (typeof window === 'undefined') return ''
+  // 嵌入页始终请求自身服务器，避免继承主后台的自定义 API 地址。
+  if (SUB_GM) return ''
   return localStorage.getItem(STORAGE_KEY_API_BASE) || ''
 }
 
@@ -402,9 +411,16 @@ export function setStoredApiBase(url: string): void {
 
 export const DEFAULT_ACCOUNT_UID = 2174928301
 
+export function hasStoredActiveUid(): boolean {
+  const stored = localStorage.getItem(STORAGE_KEY_ACTIVE_UID)
+  if (SUB_GM) return !!stored && Number.isSafeInteger(Number(stored)) && Number(stored) > 0
+  return !!stored && stored !== '10001'
+}
+
 export function getActiveUid(): number {
   if (typeof window === 'undefined') return DEFAULT_ACCOUNT_UID
   const stored = localStorage.getItem(STORAGE_KEY_ACTIVE_UID)
+  if (SUB_GM) return hasStoredActiveUid() ? Number(stored) : DEFAULT_ACCOUNT_UID
   if (!stored || stored === '10001') {
     localStorage.setItem(STORAGE_KEY_ACTIVE_UID, String(DEFAULT_ACCOUNT_UID))
     return DEFAULT_ACCOUNT_UID
@@ -461,6 +477,8 @@ export async function apiRequest<T = any>(
     'Content-Type': 'application/json',
     Accept: 'application/json',
   }
+  const token = getAuthToken()
+  if (token) defaultHeaders.Authorization = `Bearer ${token}`
 
   try {
     const res = await fetch(url, {
@@ -471,11 +489,12 @@ export async function apiRequest<T = any>(
       },
     })
 
-    if (!res.ok) {
-      throw new Error(`HTTP Error ${res.status}: ${res.statusText}`)
+    if (res.status === 401 && token && !path.startsWith('/api/auth/login') && token === getAuthToken()) {
+      setAuthToken('')
+      window.dispatchEvent(new Event('gm-auth-expired'))
     }
-
     const data = await res.json()
+    if (!res.ok) throw new Error(data.msg || `请求失败 (${res.status})`)
     if (data && typeof data === 'object') {
       if (typeof data.code === 'number' && data.code !== 0) {
         const error: any = new Error(data.msg || `GM 操作失败 (错误码: ${data.code})`)
@@ -498,6 +517,20 @@ export async function apiRequest<T = any>(
     console.warn(`[GM API] 请求失败 ${url}:`, err.message)
     throw err
   }
+}
+
+function authStorageKey(): string {
+  return `${SUB_GM ? 'sub_gm_auth' : 'gm_auth'}:${new URL(resolveApiUrl('/api/auth/me'), window.location.href).origin}`
+}
+
+export function getAuthToken(): string {
+  return (SUB_GM ? localStorage : sessionStorage).getItem(authStorageKey()) || ''
+}
+
+export function setAuthToken(token: string): void {
+  const storage = SUB_GM ? localStorage : sessionStorage
+  if (token) storage.setItem(authStorageKey(), token)
+  else storage.removeItem(authStorageKey())
 }
 
 // ===========================================================================
@@ -614,10 +647,10 @@ export async function addInventoryItem(itemId: number, num: number, uid: number 
   })
 }
 
-export async function addEquipSuit(suitId: number, count: number = 1, uid: number = getActiveUid()): Promise<ApiResponse<any>> {
+export async function addEquipSuit(suitId: number, count: number = 1, uid: number = getActiveUid(), star: number = 5): Promise<ApiResponse<any>> {
   return apiRequest('/api/gm/inventory/add_suit', {
     method: 'POST',
-    body: JSON.stringify({ uid, suit_id: suitId, count }),
+    body: JSON.stringify({ uid, suit_id: suitId, count, star }),
   })
 }
 
@@ -626,6 +659,52 @@ export async function clearInventory(category?: string, uid: number = getActiveU
     method: 'POST',
     body: JSON.stringify({ uid, category }),
   })
+}
+
+export interface CleanupPreview {
+  uid: number
+  category: 'equip' | 'servant'
+  max_star: number
+  count: number
+  items: Array<{ id: number; prefab_id: number; star: number }>
+}
+
+export async function previewInventoryCleanup(uid: number, category: 'equip' | 'servant', maxStar: number): Promise<ApiResponse<CleanupPreview>> {
+  return apiRequest(`/api/gm/inventory/cleanup_preview?uid=${uid}&category=${category}&max_star=${maxStar}`)
+}
+
+export async function confirmInventoryCleanup(preview: CleanupPreview): Promise<ApiResponse<any>> {
+  return apiRequest('/api/gm/inventory/clear', {
+    method: 'POST',
+    body: JSON.stringify({ uid: preview.uid, category: preview.category, max_star: preview.max_star,
+      instance_ids: preview.items.map(item => item.id), confirm: true }),
+  })
+}
+
+export async function unlockAllHeroes(uid: number): Promise<ApiResponse<any>> {
+  return apiRequest('/api/gm/heroes/unlock', { method: 'POST', body: JSON.stringify({ uid, all: true }) })
+}
+
+export interface DrawRules {
+  ssr_rate: number
+  soft_pity_start: number
+  hard_pity: number
+  sr_rate: number
+  sr_pity: number
+  up_rate: number
+  cost_multiplier: number
+}
+
+export async function fetchDrawRules(): Promise<ApiResponse<{ rules: Record<string, DrawRules>; defaults: Record<string, DrawRules> }>> {
+  return apiRequest('/api/gm/gacha/rules')
+}
+
+export async function saveDrawRules(group: string, rules: DrawRules): Promise<ApiResponse<{ group: string; rules: DrawRules }>> {
+  return apiRequest('/api/gm/gacha/rules', { method: 'POST', body: JSON.stringify({ group, rules }) })
+}
+
+export async function resetDrawRules(group: string): Promise<ApiResponse<{ group: string; rules: DrawRules }>> {
+  return apiRequest('/api/gm/gacha/rules', { method: 'POST', body: JSON.stringify({ group, reset: true }) })
 }
 
 // ===========================================================================
@@ -649,6 +728,7 @@ export interface GMMailRecord {
   attachments_count: number
   sent_at: number
   sent_at_str: string
+  expire_time?: number
   status: string
 }
 
@@ -661,6 +741,8 @@ export interface DBMailRecord {
   attachments: GMMailAttachment[]
   rewards: GMMailAttachment[]
   send_time: number
+  expire_time: number
+  is_expired: boolean
   read_flag: number
   attach_flag: number
   is_read: boolean
@@ -680,6 +762,8 @@ export interface SendGMMailParams {
   sender?: string
   title: string
   content: string
+  valid_days?: number
+  expire_time?: number
   attachments: Array<{ id: number; name?: string; number: number }>
 }
 
@@ -695,6 +779,75 @@ export async function sendGMMail(payload: SendGMMailParams): Promise<ApiResponse
 }
 
 export const sendMail = sendGMMail
+
+export interface RotationStep {
+  name: string
+  pool_ids: number[]
+}
+
+export interface RotationSettings {
+  enabled: boolean
+  duration_days: number
+  start_ts: number
+  fixed_pool_ids: number[]
+  steps: RotationStep[]
+  updated_at?: number
+}
+
+export interface LevelMailRuleDraft {
+  id?: number
+  name: string
+  enabled: boolean
+  level_min: number
+  level_max: number
+  title: string
+  sender: string
+  content: string
+  attachments: GMMailAttachment[]
+  valid_days: number
+  include_existing?: boolean
+}
+
+export interface LevelMailRule extends LevelMailRuleDraft {
+  id: number
+  sent_count: number
+  skipped_count: number
+  pending_count: number
+  failures: Array<{ uid: number; attempts: number; last_error: string; last_attempt_ts: number }>
+}
+
+export interface AutomationStatus {
+  settings: {
+    battlepass: { duration_days: number; anchor_ts: number; next_duration_days: number | null }
+    polyhedron: { duration_days: number; anchor_ts: number; next_duration_days: number | null }
+    rotation: RotationSettings
+  }
+  now_ts: number
+  timezone: string
+  utc_offset_seconds: number
+  battlepass: { start_ts: number; end_ts: number; next_weekly_ts: number }
+  polyhedron: { start_ts: number; end_ts: number }
+  tasks: { next_daily_ts: number; next_weekly_ts: number }
+  rotation: { enabled: boolean; waiting: boolean; step_index: number; step_name: string; start_ts: number; next_rotation_ts: number; applied_at: number }
+  mail_rules: LevelMailRule[]
+  scheduler: { running: boolean; interval_seconds: number; last_tick_ts: number; last_error: string; sent_count: number; failed_count: number }
+}
+
+export async function fetchAutomationStatus(): Promise<ApiResponse<AutomationStatus>> {
+  return apiRequest('/api/gm/automation/status')
+}
+
+export async function saveRuntimeSchedule(patch: {
+  battlepass?: { duration_days: number }
+  polyhedron?: { duration_days: number }
+  rotation?: Omit<RotationSettings, 'updated_at'>
+}): Promise<ApiResponse<Omit<AutomationStatus, 'mail_rules' | 'scheduler'>>> {
+  return apiRequest('/api/gm/automation/schedule', { method: 'POST', body: JSON.stringify(patch) })
+}
+
+export async function saveLevelMailRule(rule: LevelMailRuleDraft): Promise<ApiResponse<LevelMailRuleDraft & { id: number }>> {
+  return apiRequest('/api/gm/mail/rules', { method: 'POST', body: JSON.stringify(rule) })
+}
 
 // ===========================================================================
 // 6. 卡池管理 (/api/gm/gacha)
@@ -763,6 +916,7 @@ export interface GachaOverviewData {
     [key: string]: DrawRecordItem[] | undefined
   }
   uid: number
+  rules?: Record<string, DrawRules>
 }
 
 export async function fetchGachaPools(uid: number = getActiveUid()): Promise<ApiResponse<GachaOverviewData>> {

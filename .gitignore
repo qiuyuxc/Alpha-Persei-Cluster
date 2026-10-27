@@ -54,6 +54,7 @@ venv/
 
 # Frontend Dependencies & Staging Bundles
 node_modules/
+node_modules
 **/node_modules/
 .vite/
 dist/
@@ -71,3 +72,19 @@ Thumbs.db
 /archive/
 *.before*
 *.part
+
+# Local development notes, validation state and private signing material
+AGENTS.md
+AGENT_BOARD.md
+TODO*.md
+WORK.md
+*.pass
+*.jks
+*.keystore
+owner-setup.json
+validation.json
+/lsposed-dns-module/build/
+/lsposed-dns-module/dist/
+/lsposed-dns-module/signing/
+/server-repair/
+/android-analysis/

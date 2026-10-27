@@ -854,12 +854,10 @@ class PolyhedronRunManager:
         db.execute("UPDATE polyhedron_meta SET game_state = 1, update_ts = ? WHERE uid = ?", (now, uid))
 
     @classmethod
-    def get_policy_cycle_id(cls, now_ts=None, base_anchor=1700000000):
-        """计算当前历程周期 ID（以每周一 05:00:00 为基准 7 天轮换周期）"""
-        if now_ts is None:
-            now_ts = int(time.time())
-        # 604800 秒 = 7 天
-        return int((now_ts - base_anchor) // 604800)
+    def get_policy_cycle_id(cls, db, now_ts=None):
+        """历程周期编号取后台配置的多维变量窗口起点，与活动展示窗口同一锚点。"""
+        import game_cycles
+        return int(game_cycles.polyhedron_window(db, now_ts)[0])
 
     @classmethod
     def check_and_refresh_policy_cycle(cls, uid, db, activity_id=4307301, force_cycle_id=None):
@@ -869,16 +867,16 @@ class PolyhedronRunManager:
         多维终端经验(46)、已点亮天赋加点、已解锁英雄、已解锁信标、最高难度通关记录等全部永久保留！
         """
         now = int(time.time())
-        current_cycle_id = force_cycle_id if force_cycle_id is not None else cls.get_policy_cycle_id(now)
+        current_cycle_id = force_cycle_id if force_cycle_id is not None else cls.get_policy_cycle_id(db, now)
 
         meta = db.get("polyhedron_meta", uid, "AND activity_id=?", (activity_id,))
         last_cycle_id = meta.get("cycle_id", 0) if meta else 0
 
-        if meta and last_cycle_id != 0 and last_cycle_id == current_cycle_id and force_cycle_id is None:
+        if last_cycle_id == current_cycle_id and force_cycle_id is None:
             return False  # 同一周期内，无需刷新
 
-        if last_cycle_id == 0 and force_cycle_id is None:
-            # 首次记录周期锚点，保留已有经验与领取状态
+        if not last_cycle_id and force_cycle_id is None:
+            # 首次记录周期锚点（含 cycle_id 列上线后的存量账号），保留已有经验与领取状态
             db.upsert("polyhedron_meta", uid, {
                 "activity_id": activity_id,
                 "cycle_id": current_cycle_id,

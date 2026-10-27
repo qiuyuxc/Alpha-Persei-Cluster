@@ -33,7 +33,8 @@ import {
 } from '../lib/api'
 import { useElementSize } from '../lib/useElementSize'
 import defaultCatalog from '../data/items_catalog.json'
-import { INVENTORY_OFFLINE_SNAPSHOT } from '../data/inventory_fallback'
+import { InventoryActions } from '../components/InventoryActions'
+import type { InventoryItemEntry } from '../lib/api'
 
 // 官方字典条目原始结构
 interface CatalogItem {
@@ -105,6 +106,8 @@ function getCategoryLabel(type: number, id?: number, name?: string): string {
       return '培养材料'
     case 7:
       return '刻印套装'
+    case 9:
+      return '钥从'
     case 20:
     case 26:
     case 14:
@@ -162,6 +165,7 @@ const CATEGORIES = [
   '宝箱礼包',
   '培养材料',
   '刻印套装',
+  '钥从',
   '个性装扮',
   '其他道具',
 ]
@@ -212,13 +216,21 @@ function HeaderCell({ children, align }: { children: React.ReactNode; align?: 'e
 }
 
 export default function InventoryPanel() {
-  const { activeUid } = useServer()
+  const { activeUid, isOnline } = useServer()
 
   // 1. 核心数据状态（带离线 1,757 项全图鉴与 879 项真实持仓离线兜底，永不为0）
   const [catalog, setCatalog] = useState<CatalogItem[]>(defaultCatalog as CatalogItem[])
-  const [ownedMap, setOwnedMap] = useState<Record<number, number>>(INVENTORY_OFFLINE_SNAPSHOT)
+  const [ownedMap, setOwnedMap] = useState<Record<number, number>>({})
   const [isLoading, setIsLoading] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [inventoryLoaded, setInventoryLoaded] = useState(false)
+  const [inventoryError, setInventoryError] = useState('')
+  const [apiItems, setApiItems] = useState<InventoryItemEntry[]>([])
+  const [managedItem, setManagedItem] = useState<CatalogItem | null>(null)
+  const loadSequence = useRef(0)
+  const currentUid = useRef(activeUid)
+  currentUid.current = activeUid
+
 
   // 2. 筛选与视图状态
   const [view, setView] = useState<ViewMode>('grid')
@@ -259,36 +271,52 @@ export default function InventoryPanel() {
 
   // 异步拉取当前账号在测试库的真实持仓
   const loadInventory = async (isManual = false) => {
+    const uid = activeUid
+    if (uid !== currentUid.current) return
+    const sequence = ++loadSequence.current
+    setIsLoading(true)
     if (isManual) setIsRefreshing(true)
     try {
-      const res = await fetchInventoryItems(activeUid)
-      if (res.code === 0 && res.data && Array.isArray(res.data.items)) {
-        const map: Record<number, number> = {}
-        for (const it of res.data.items) {
-          map[it.id] = (map[it.id] || 0) + (it.num || 1)
-        }
-        setOwnedMap(map)
+      const res = await fetchInventoryItems(uid)
+      if (sequence !== loadSequence.current || uid !== currentUid.current) return
+      if (res.code !== 0 || !res.data || !Array.isArray(res.data.items)) throw new Error(res.msg || '库存读取失败')
+      const map: Record<number, number> = {}
+      for (const item of res.data.items) {
+        const amount = Number(item.num ?? 0)
+        if (amount > 0) map[item.id] = (map[item.id] || 0) + amount
       }
-    } catch (err) {
-      console.warn('获取玩家背包持仓失败:', err)
+      setOwnedMap(map); setApiItems(res.data.items); setInventoryLoaded(true); setInventoryError('')
+    } catch (error) {
+      if (sequence !== loadSequence.current || uid !== currentUid.current) return
+      setInventoryLoaded(false); setOwnedMap({}); setApiItems([])
+      setInventoryError(error instanceof Error ? error.message : '库存读取失败')
     } finally {
-      setIsLoading(false)
-      if (isManual) setIsRefreshing(false)
+      if (sequence === loadSequence.current) { setIsLoading(false); setIsRefreshing(false) }
     }
   }
 
   useEffect(() => {
-    loadInventory()
-  }, [activeUid])
+    setOwnedMap({}); setApiItems([]); setInventoryLoaded(false); setInventoryError(''); setManagedItem(null)
+    if (isOnline) loadInventory()
+    return () => { loadSequence.current++ }
+  }, [activeUid, isOnline])
 
   // 将 catalog 与 ownedMap O(1) 融合
   const mergedItems = useMemo<InventoryDisplayItem[]>(() => {
-    return catalog.map((cat) => ({
+    const known = new Set(catalog.map(item => item.id))
+    const extras: CatalogItem[] = []
+    for (const item of apiItems) {
+      if (known.has(item.id)) continue
+      known.add(item.id)
+      extras.push({ id: item.id, name: item.name || `物品 #${item.id}`, type: item.item_type || 0,
+        rare: Math.min(5, Math.max(1, item.rare || item.star || 1)), icon_file: '', quality_frame: 'Item_box.png' })
+    }
+    return [...catalog, ...extras].map((cat) => ({
       ...cat,
       category: getCategoryLabel(cat.type, cat.id, cat.name),
       ownedCount: ownedMap[cat.id] || 0,
     }))
-  }, [catalog, ownedMap])
+  }, [catalog, ownedMap, apiItems])
 
   // 多维筛选计算
   const filtered = useMemo(() => {
@@ -467,6 +495,7 @@ export default function InventoryPanel() {
             showAddButton={!isDisplayOnly}
             isAdded={inDraft}
             onAdd={() => handleToggleDraft(item)}
+            onClick={() => { setManagedItem(item); document.getElementById('inventory-actions')?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }}
           />
         </div>
 
@@ -515,6 +544,7 @@ export default function InventoryPanel() {
             qualityFrame={item.quality_frame}
             size="sm"
             showCount={false}
+            onClick={() => { setManagedItem(item); document.getElementById('inventory-actions')?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }}
           />
           <span className="truncate text-xs font-medium text-foreground" title={item.name}>
             {item.name}
@@ -593,6 +623,7 @@ export default function InventoryPanel() {
             qualityFrame={item.quality_frame}
             size="sm"
             showCount={false}
+            onClick={() => { setManagedItem(item); document.getElementById('inventory-actions')?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }}
           />
           <span className="truncate text-xs font-medium text-foreground" title={item.name}>
             {item.name}
@@ -647,7 +678,7 @@ export default function InventoryPanel() {
       {/* 1. 顶部 Header */}
       <PageHeader
         title="资源背包 · 资产监控"
-        description="直通游戏数据库真实货币、素材与刻印持仓。官方 1,757 项全图鉴覆盖，精准匹配原生品质框与图标，支持附件快捷加入邮件草稿池。"
+        description="查询真实货币、材料、碎片、刻印和钥从。点击物品图标可直接发放，独立资产按型号合计显示。"
         actions={
           <div className="flex items-center gap-2">
             <Button
@@ -678,6 +709,10 @@ export default function InventoryPanel() {
         }
       />
 
+      {inventoryError && <p role="alert" className="text-sm text-danger">{inventoryError}，请刷新重试。</p>}
+      <InventoryActions key={activeUid} uid={activeUid} enabled={isOnline && inventoryLoaded && !isLoading}
+        selected={managedItem} catalog={mergedItems} onChanged={() => { void loadInventory(true) }} />
+
       {/* 2. 参照 Warehouse 架构的数据规模与搜索管理卡片 */}
       <Card className="p-5 shadow-surface">
         <Card.Content className="space-y-4">
@@ -695,7 +730,7 @@ export default function InventoryPanel() {
               <div className="flex items-center gap-1.5">
                 <span className="text-muted">当前已拥有</span>
                 <span className="font-mono font-semibold tabular-nums text-accent">
-                  {ownedTotalTypes.toLocaleString('en-US')} 种
+                  {inventoryLoaded ? `${ownedTotalTypes.toLocaleString('en-US')} 种` : '未读取'}
                 </span>
               </div>
               <Separator orientation="vertical" className="h-3.5" />

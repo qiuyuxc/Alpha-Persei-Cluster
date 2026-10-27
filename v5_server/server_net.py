@@ -30,6 +30,7 @@ import generator as _gen       # noqa: E402
 from transport import pack_down, unpack_up, FrameParser  # noqa: E402
 import cdn_proxy               # noqa: E402  官方 CDN 穿透与动态抓包器
 import gen_cert                # noqa: E402  局域网 IP 与证书工具
+from client_platform import request_platform
 from logger import log as _logger_log
 
 _HOST_IP = [gen_cert.get_default_lan_ip()]
@@ -238,6 +239,23 @@ def push_mail_notice(uid):
     return pushed_count
 
 
+def push_gm_frames(uid, frames):
+    """Deliver committed GM changes only to fully initialized game sessions."""
+    with _online_conns_lock:
+        conns = list(_online_game_conns.get(int(uid), []))
+    delivered = 0
+    for conn in conns:
+        if not getattr(conn, "initialized", False) or not callable(conn.send_push):
+            continue
+        try:
+            if all(conn.send_push(frame.cmd, frame.payload, flag=frame.flag) is not False for frame in frames):
+                delivered += 1
+        except Exception as error:
+            if conn.log:
+                conn.log(f"[GM] 在线同步失败: {error}", "WARN")
+    return delivered
+
+
 class GameHandler(socketserver.StreamRequestHandler):
     """game TCP 连接处理：收帧 → CORE 分发 → 组帧回发。
     server 属性由 ThreadedServer 装配注入（core/db/generator/codec/replay/material/frame_delay）。"""
@@ -245,7 +263,13 @@ class GameHandler(socketserver.StreamRequestHandler):
     def handle(self):
         peer = f"{self.client_address[0]}:{self.client_address[1]}"
         self.server.core.log(f"[TCP:{self.server.game_port}] [{peer}] 连接建立", "INFO")
-        uid = _gen.DEFAULT_UID  # 雏形：登录后 uid 绑定（后续接登录链）
+        from auth_service import get_service, AuthError
+        import auth_protocol
+        auth = get_service(self.server.db)
+        uid = 0
+        auth_version = 0
+        auth_context = {}
+        opened_at = time.monotonic()
         conn = core_mod.Connection(uid=uid, db=self.server.db,
                                    generator=self.server.generator,
                                    codec_encode=self.server.codec_encode,
@@ -276,8 +300,10 @@ class GameHandler(socketserver.StreamRequestHandler):
                     traffic_tracker.record_bytes(len(raw))
                     self.request.sendall(raw)
                 self.server.core.log(f"[PUSH #{srv}] -> SC_{sc_cmd} | Size: {len(payload)}B | flag={flag}", "INFO")
+                return True
             except Exception as _e:
                 self.server.core.log(f"[PUSH] SC_{sc_cmd} 推送异常: {_e}", "WARN")
+                return False
 
         conn.send_push = _send_push
         register_game_conn(conn, conn.uid)
@@ -290,6 +316,8 @@ class GameHandler(socketserver.StreamRequestHandler):
                     if data:
                         traffic_tracker.record_bytes(len(data))
                 except socket.timeout:
+                    if (not conn.uid and time.monotonic() - opened_at > 30) or (conn.uid and not auth.connection_valid(conn.uid, auth_version)):
+                        break
                     # 挂机/空闲滴答：检查在线体力是否未满且到达 360 秒，若满足主动推送 sc_15009
                     if conn.uid:
                         try:
@@ -302,8 +330,7 @@ class GameHandler(socketserver.StreamRequestHandler):
                     break
                 # 调试期诊断：每次 recv 的原始数据（前 60B hex）+ 切帧结果
                 self.server.core.log(
-                    f"[TCP:{self.server.game_port}] recv {len(data)}B buf前={len(fp.buf)}B "
-                    f"hex={data[:60].hex(' ')}", "DEBUG")
+                    f"[TCP:{self.server.game_port}] recv {len(data)}B buf前={len(fp.buf)}B", "DEBUG")
                 frames_in = []
                 for frame in fp.feed(data):
                     try:
@@ -328,14 +355,19 @@ class GameHandler(socketserver.StreamRequestHandler):
                             pass
                 for up in frames_in:
                     cmd = up["cmd"]
+                    if cmd != 10042 and (not conn.uid or not auth.connection_valid(conn.uid, auth_version)):
+                        return
                     # 登录洪流（10200 触发）——DB 驱动（login_push 表 + generator 动态帧）
                     # 2026-08-16 阶段2：重放系统从功能链路退役，洪流不再读素材文件
                     if cmd == 10200:
+                        conn.initialized = False
                         import login as _login
-                        _login.send_login_flood(
+                        _login_count, _ = _login.send_login_flood(
                             self.request, self.server.db, conn.uid,
                             self.server.generator, frame_delay=self.server.frame_delay,
-                            log=self.server.core.log)
+                            log=self.server.core.log, auth_context=auth_context)
+                        self.request.settimeout(1.0)
+                        conn.initialized = _login_count > 0
                         # 登录洪流完成：标记全量初始化帧已下发首次初态基准
                         for _init_sc in FULL_SYNC_FRAMES:
                             sent_sc_counts[_init_sc] = max(1, sent_sc_counts[_init_sc])
@@ -349,29 +381,31 @@ class GameHandler(socketserver.StreamRequestHandler):
                         continue
                     # 登录验证帧（10042→10043）——原生动态生成
                     if cmd == 10042:
+                        from schema_default import default_obj
                         try:
                             dec_up = self.server.codec_decode(up["payload"], "cs_10042")
-                            if isinstance(dec_up, dict) and dec_up.get("user_id"):
-                                old_uid = conn.uid
-                                new_uid = int(dec_up["user_id"])
-                                if new_uid != old_uid:
-                                    unregister_game_conn(conn, old_uid)
-                                    conn.uid = new_uid
-                                    register_game_conn(conn, conn.uid)
-                        except Exception:
-                            pass
-                        d_10043 = {
-                            "result": 0,
-                            "register_timestamp": 1690000000,
-                            "timestamp": int(time.time()),
-                            "verify_timestamp": 316800,
-                            "uid_sign": "mock_uid_sign"
-                        }
-                        payload = self.server.codec_encode("sc_10043", d_10043) or b"\x08\x00\x10\x80\xb5\xed\xa5\x06\x18\x96\x96\xc5\xd4\x06\x20\x80\xab\x13\x2a\x09\x6d\x6f\x63\x6b\x5f\x73\x69\x67\x6e"
+                            account, d_10043 = auth_protocol.game(self.server.db, dec_up)
+                            if conn.uid and conn.uid != account["uid"]:
+                                raise AuthError("连接不能切换角色", 401)
+                        except (AuthError, ValueError, TypeError, AttributeError):
+                            payload = self.server.codec_encode("sc_10043", default_obj("sc_10043", {"result": 1}))
+                            self.request.sendall(pack_down(10043, payload, up["index"], up["server_idx"] + 1))
+                            return
+                        conn.uid = account["uid"]
+                        auth_version = account["token_version"]
+                        role = self.server.db.get("users", conn.uid)
+                        auth_context = {10043: d_10043, 10039: {
+                            "result": 0, "server_id": int(role.get("server_id") or 2),
+                            "ip": getattr(self.server, "host_ip", None) or _HOST_IP[0] or get_host_ip(),
+                            "port": self.server.game_port, "user_id": conn.uid,
+                            "gstoken": dec_up["gstoken"], "timestamp": int(time.time()),
+                            "is_new_player": auth_protocol.is_new_player(self.server.db, account)}}
+                        register_game_conn(conn, conn.uid)
+                        payload = self.server.codec_encode("sc_10043", d_10043)
                         out = pack_down(10043, payload, up["index"], up["server_idx"] + 1)
                         traffic_tracker.record_bytes(len(out))
                         self.request.sendall(out)
-                        self.server.core.log(f"[GAME] cs_10042 → sc_10043（原生动态生成，uid={conn.uid}）", "INFO")
+                        self.server.core.log(f"[GAME] authenticated uid={conn.uid}", "INFO")
                         continue
                     # CORE 分发
                     req = core_mod.CoreRequest(cmd, up["payload"], uid=conn.uid,
@@ -473,30 +507,34 @@ class GatewayHandler(socketserver.StreamRequestHandler):
                         peer_ip = self.client_address[0] if hasattr(self, "client_address") else "127.0.0.1"
                         lan_ip = getattr(self.server, "host_ip", None) or _HOST_IP[0] or get_host_ip()
                         game_ip = "127.0.0.1" if peer_ip in ("127.0.0.1", "::1") else lan_ip
-                        d = {
-                            "result": 0,
-                            "server_id": 1,
-                            "ip": game_ip,
-                            "port": self.server.game_port or 8105,
-                            "user_id": _gen.DEFAULT_UID,
-                            "gstoken": "45f95a4402b51fddcd17b81dd3edfe06",
-                            "timestamp": int(time.time()),
-                        }
+                        from auth_service import AuthError
+                        from schema_default import default_obj
+                        import auth_protocol
+                        try:
+                            d = auth_protocol.gateway(self.server.db,
+                                self.server.codec_decode(up["payload"], "cs_10038"),
+                                game_ip, self.server.game_port or 8105)
+                        except (AuthError, ValueError, TypeError, AttributeError):
+                            d = default_obj("sc_10039", {"result": 1})
                         payload = self.server.codec_encode("sc_10039", d)
                         out = pack_down(10039, payload, up["index"], up["server_idx"] + 1)
-                        self.server.core.log(f"[GW] cs_10038 → sc_10039（下发目标 {game_ip}:{self.server.game_port or 8105}，客户端 {peer_ip}）", "INFO")
+                        if d["result"]:
+                            self.request.sendall(out)
+                            return
+                        self.server.core.log(f"[GW] authenticated uid={d['user_id']} → {game_ip}:{self.server.game_port}", "INFO")
                     elif cmd == 10042:
-                        # 原生下发 SC_10043（登录验证）
-                        d = {
-                            "result": 0,
-                            "register_timestamp": 1690000000,
-                            "timestamp": int(time.time()),
-                            "verify_timestamp": 316800,
-                            "uid_sign": "mock_uid_sign"
-                        }
+                        from auth_service import AuthError
+                        from schema_default import default_obj
+                        import auth_protocol
+                        try:
+                            _, d = auth_protocol.game(self.server.db, self.server.codec_decode(up["payload"], "cs_10042"))
+                        except (AuthError, ValueError, TypeError, AttributeError):
+                            d = default_obj("sc_10043", {"result": 1})
                         payload = self.server.codec_encode("sc_10043", d)
                         out = pack_down(10043, payload, up["index"], up["server_idx"] + 1)
-                        self.server.core.log(f"[GW] cs_10042 → sc_10043（原生登录验证）", "INFO")
+                        if d["result"]:
+                            self.request.sendall(out)
+                            return
                     elif cmd == 10050:
                         # 心跳动态生成（verify_timestamp=316800 常量）
                         p = self.server.codec_encode(
@@ -504,10 +542,6 @@ class GatewayHandler(socketserver.StreamRequestHandler):
                             {"state": 0, "timestamp": int(time.time()), "verify_timestamp": 316800}
                         ) or b"\x08\x00"
                         out = pack_down(10051, p, up["index"], up["server_idx"] + 1)
-                    elif gw_resp_map and cmd in gw_resp_map:
-                        # 其余心跳查表回放
-                        raw = bytes.fromhex(gw_resp_map[cmd])
-                        out = pack_down(cmd + 1, raw[11:], up["index"], up["server_idx"] + 1)
                     else:
                         self.server.core.log(f"[GW] 未知 cmd={cmd} 不回包", "WARN")
                     if out:
@@ -561,6 +595,9 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
     from flask import Flask, request, jsonify, Response, send_file, redirect
 
     app = Flask("v5_https")
+    from account_db import get_db
+    from auth_api import install as install_auth
+    auth = install_auth(app, getattr(core, "db", None) or get_db())
     idx = material.get("http_index") or {} if (material and isinstance(material, dict)) else {}
     lan_ip = host_ip or _HOST_IP[0] or get_host_ip()
 
@@ -603,27 +640,6 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
                 pass
         return response
 
-    # SDK 账户与 Token 处理钩子（留空方法口子，方便未来对接真实注册/入库）
-    def _verify_and_create_user(username, password=None):
-        """账密校验与用户 Token 生成口子。当前不做校验，始终返回有效用户与 Token。"""
-        uid = _gen.DEFAULT_UID
-        token = f"{uuid.uuid4().hex[:32]}.{uid}"
-        return {
-            "uid": uid,
-            "username": username or "Admin",
-            "token": token
-        }
-
-    def _verify_token(token_str):
-        """Token 消费与校验口子。当前不做校验，始终返回有效用户与 Token。"""
-        uid = _gen.DEFAULT_UID
-        token = token_str or f"{uuid.uuid4().hex[:32]}.{uid}"
-        return {
-            "uid": uid,
-            "username": "Admin",
-            "token": token
-        }
-
     # 加载公告与适龄提示独立配置文件
     def _load_notice_cfg():
         cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notice_cfg.json")
@@ -652,20 +668,10 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
         if not path.startswith("/"):
             path = "/" + path
 
-        raw_body = request.get_data()
-        b_preview = raw_body[:300]
-        b_str = f" body={b_preview.decode('utf-8', errors='ignore')}" if b_preview else ""
-        client_ip = request.headers.get("X-Forwarded-For") or request.remote_addr or ""
+        # Authentication credentials and SDK reports must never enter application logs.
+        client_ip = request.remote_addr or ""
         ua = request.headers.get("User-Agent", "")
-        print(f"[HTTPS] [{request.method}] from={client_ip} host={host} path={path} qs={qs}{b_str}", flush=True)
-
-        # 详细抓取客户端日志上报（崩溃、初始化异常、埋点）
-        if "log" in path or "report" in path or "client" in path or "ta.ys4fun" in host:
-            try:
-                body_decoded = raw_body.decode("utf-8", errors="ignore")
-                print(f"[CLIENT REPORT] path={path} host={host} UA={ua}\n  BODY={body_decoded}", flush=True)
-            except Exception:
-                pass
+        print(f"[HTTPS] [{request.method}] from={client_ip} host={host} path={path}", flush=True)
 
         # 1. 处理 OPTIONS 预检请求
         if request.method == "OPTIONS":
@@ -1132,7 +1138,16 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
                 })
 
             # 默认返回区服列表 (action=server)
-            mix_id = request.args.get("mixId", str(_gen.DEFAULT_UID))
+            from auth_api import sdk_token
+            from auth_service import AuthError
+            own_roles = []
+            try:
+                account = auth.verify(sdk_token(request.args), {"sdk", "mix"})
+                role = auth.db.get("users", account["uid"])
+                own_roles = [{"uid": str(account["uid"]), "currentLevel": role["level"],
+                              "nickName": role["nick"], "mixId": str(account["uid"])}]
+            except AuthError:
+                pass
             gw_ip = "127.0.0.1" if request.remote_addr in ("127.0.0.1", "::1") else lan_ip
 
             # 读取动态区服配置（支持自定义服名与多区服管理）
@@ -1175,13 +1190,7 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
                         {"key": "REST_URL", "value": "https://prod-api-activity.ys4fun.com/skzy-activity"},
                         {"key": "PC_FEEDBACK", "value": "https://open.ys4fun.com/web/agreement.html?tab=support"}
                     ],
-                    "gameUserInfoList": [
-                        {
-                            "uid": str(_gen.DEFAULT_UID), "currentLevel": 93,
-                            "nickName": "Admin", "lastLoginTime": "2026-08-28 12:00:00",
-                            "mixId": str(mix_id or _gen.DEFAULT_UID)
-                        }
-                    ]
+                    "gameUserInfoList": own_roles
                 })
 
             return jsonify({
@@ -1216,179 +1225,7 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
                 resp.headers["Access-Control-Allow-Origin"] = "*"
                 return resp
 
-        # 5. Token 快速登录（客户端携带本地缓存 Token，秒进游戏无等待）
-        if path.endswith("/pass/user/loginByToken"):
-            req_token = request.form.get("token") or request.args.get("token") or ""
-            uinfo = _verify_token(req_token)
-            return jsonify({
-                "errorCode": "0",
-                "data": {
-                    "userId": 1012030496969579190,
-                    "regionNo": "1",
-                    "phone": "13800000000",
-                    "nickName": uinfo["username"],
-                    "birth": -225014400000,
-                    "gender": "male",
-                    "token": uinfo["token"],
-                    "valid": False,
-                    "locked": False,
-                    "newMsgCount": 0,
-                    "totalRecharge": 0,
-                    "totalRechargeDis": "0.00",
-                    "realNameValid": True,
-                    "realNameValidResult": "succ",
-                    "adult": True,
-                    "realNameUpdateLimit": 0,
-                    "guest": False,
-                    "privList": [],
-                    "privPermList": [],
-                    "inviteLimit": False,
-                    "age": 25,
-                    "registerFlag": False,
-                    "birthday": "19990101",
-                    "securityValid": False,
-                    "loginType": "token"
-                }
-            })
-
-        # 6. 账密登录（/sdk-api/pass/user/login 接受任意账密直接通过）
-        if path.endswith("/sdk-api/pass/user/login") or (path.endswith("/pass/user/login") and "mix-sdk-api" not in path):
-            username = request.form.get("username") or request.args.get("username") or "Admin"
-            password = request.form.get("password") or request.args.get("password") or ""
-            uinfo = _verify_and_create_user(username, password)
-            return jsonify({
-                "errorCode": "0",
-                "data": {
-                    "userId": 1012030496969579190,
-                    "regionNo": "1",
-                    "phone": str(username),
-                    "nickName": str(username),
-                    "birth": -225014400000,
-                    "gender": "male",
-                    "token": uinfo["token"],
-                    "valid": False,
-                    "locked": False,
-                    "newMsgCount": 0,
-                    "totalRecharge": 0,
-                    "totalRechargeDis": "0.00",
-                    "realNameValid": True,
-                    "realNameValidResult": "succ",
-                    "adult": True,
-                    "realNameUpdateLimit": 0,
-                    "guest": False,
-                    "privList": [],
-                    "privPermList": [],
-                    "inviteLimit": False,
-                    "age": 25,
-                    "registerFlag": False,
-                    "birthday": "19990101",
-                    "securityValid": False,
-                    "loginType": "username"
-                }
-            })
-
-        # 7. 发送短信验证码（/sdk-api/pass/sms/send 直接返回成功放行倒计时）
-        if path.endswith("/pass/sms/send"):
-            phone = request.form.get("phone") or request.args.get("phone") or ""
-            print(f"[SMS] 发送验证码到手机: {phone} (免验放行)", flush=True)
-            return jsonify({"errorCode": "0", "data": {}})
-
-        # 8. 短信验证码登录（/sdk-api/pass/user/loginBySms 接受任意手机号与验证码直接通过）
-        if path.endswith("/pass/user/loginBySms") or path.endswith("/pass/user/registerBySms"):
-            phone = request.form.get("phone") or request.args.get("phone") or "13800000000"
-            auth_code = request.form.get("authCode") or request.args.get("authCode") or ""
-            nick = phone
-            if len(phone) >= 7:
-                nick = phone[:3] + "****" + phone[-4:]
-            uinfo = _verify_and_create_user(nick)
-            print(f"[SMS] 手机短信登录: phone={phone}, code={auth_code} -> 登录成功", flush=True)
-            return jsonify({
-                "errorCode": "0",
-                "data": {
-                    "userId": 1012030496969579190,
-                    "regionNo": "86",
-                    "phone": str(phone),
-                    "nickName": nick,
-                    "birth": -225014400000,
-                    "gender": "male",
-                    "token": uinfo["token"],
-                    "valid": False,
-                    "locked": False,
-                    "newMsgCount": 0,
-                    "totalRecharge": 0,
-                    "totalRechargeDis": "0.00",
-                    "realNameValid": True,
-                    "realNameValidResult": "succ",
-                    "adult": True,
-                    "realNameUpdateLimit": 0,
-                    "guest": False,
-                    "privList": [],
-                    "privPermList": [],
-                    "inviteLimit": False,
-                    "age": 25,
-                    "registerFlag": False,
-                    "birthday": "19990101",
-                    "securityValid": False,
-                    "loginType": "phone"
-                }
-            })
-
-        # 9. 手机号存在性检查与密码重置
-        if path.endswith("/pass/user/isPhoneExist"):
-            return jsonify({"errorCode": "0", "data": {"exist": True}})
-
-        if path.endswith("/pass/user/resetPassword"):
-            return jsonify({"errorCode": "0", "data": {}})
-
-        def _check_is_pay_allowed():
-            ua_low = request.headers.get("User-Agent", "").lower()
-            if "ios" in ua_low or "iphone" in ua_low or "ipad" in ua_low or "darwin" in ua_low:
-                record_client_platform("ios")
-            elif "windows" in ua_low or "pc" in ua_low:
-                record_client_platform("pc")
-            elif "android" in ua_low:
-                record_client_platform("android")
-            import res_version_manager
-            curr_ver = res_version_manager.get_current_version()
-            plat = get_latest_client_platform()
-            db = getattr(core, "db", None)
-            if db is None:
-                try:
-                    from account_db import get_db
-                    db = get_db()
-                except Exception:
-                    pass
-            pay_on = (db.get_system_config("ios_pay_enabled", "0") == "1") if db else False
-            return bool(curr_ver == "229" and plat == "ios" and pay_on)
-
-        # 7. Mix SDK 登录（/mix-sdk-api/pass/user/login）
-        if "mix-sdk-api" in path and path.endswith("/pass/user/login"):
-            ua_low = request.headers.get("User-Agent", "").lower()
-            if "ios" in ua_low or "iphone" in ua_low or "ipad" in ua_low or "darwin" in ua_low:
-                record_client_platform("ios")
-            channel_user_id = "1012030496969579190"
-            token = f"{uuid.uuid4().hex[:32]}.{_gen.DEFAULT_UID}"
-            is_pay_allowed = _check_is_pay_allowed()
-            return jsonify({
-                "errorCode": "0",
-                "data": {
-                    "id": _gen.DEFAULT_UID,
-                    "createDate": 1760276673000,
-                    "modifyDate": int(time.time() * 1000),
-                    "gameId": 3,
-                    "channelId": 9,
-                    "channelUserId": channel_user_id,
-                    "token": token,
-                    "expireDate": int((time.time() + 86400 * 365) * 1000),
-                    "enableLogin": True,
-                    "enablePay": is_pay_allowed,
-                    "enableNewRole": False,
-                    "totalRecharge": 0,
-                    "registerFlag": False,
-                    "inviteLimit": False,
-                    "targetChannelId": 7
-                }
-            })
+        # SDK account routes are handled by auth_api before this compatibility router.
 
         # 8. captcha 极验离线降级
         if path.endswith("/pass/captcha/init"):
@@ -1406,10 +1243,10 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
 
         # 9. SDK 配置（客户端初始化必需）
         if path == "/config" or path.startswith("/config?"):
-            ua_low = request.headers.get("User-Agent", "").lower()
-            plat_req = request.args.get("platformType", "").lower()
-            is_ios_client = "ios" in ua_low or "iphone" in ua_low or "ipad" in ua_low or "darwin" in ua_low or plat_req == "ios"
-            plat_type = "ios" if is_ios_client else ("android" if ("android" in ua_low or plat_req == "android") else "pc")
+            try:
+                plat_type = request_platform(request)
+            except ValueError as error:
+                return jsonify({"errorCode": "400", "errorMsg": str(error), "data": {}})
             record_client_platform(plat_type)
             channel_id = 7 if plat_type == "ios" else (8 if plat_type == "android" else 9)
             return jsonify({
@@ -1500,6 +1337,12 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
                 ]
             })
 
+        def _check_is_pay_allowed():
+            import res_version_manager
+            return bool(res_version_manager.get_current_version() == "229"
+                        and get_latest_client_platform() == "ios"
+                        and auth.db.get_system_config("ios_pay_enabled", "0") == "1")
+
         # 12.2 移动端全局系统配置
         if path.endswith("/pass/syscfg/getGlobalCfgInfo"):
             is_pay_allowed = _check_is_pay_allowed()
@@ -1529,29 +1372,20 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
 
         # 14. 资源版本更新检查（根据客户端平台定向分发：PC / iOS / Android）
         if path.endswith("/pass/game/updateversion/getLatest"):
-            req_json = request.get_json(silent=True) or {}
-            plat = (
-                request.args.get("platformType")
-                or request.form.get("platformType")
-                or req_json.get("platformType")
-                or ""
-            ).lower()
-            chid = str(request.args.get("channelId") or request.form.get("channelId") or req_json.get("channelId") or "")
-            ua = request.headers.get("User-Agent", "").lower()
-
-            is_ios = plat == "ios" or chid in ("7", "ios") or "iphone" in ua or "ios" in ua or "darwin" in ua
-            is_android = plat == "android" or "android" in ua
-            cur_plat = "ios" if is_ios else ("android" if is_android else "pc")
-            record_client_platform(cur_plat)
-
-            # 统一根据 res_version_manager 动态分发所选版本（229 或 311）之资源清单配置
             import res_version_manager
-            ver_cfg = res_version_manager.get_version_config()
+            try:
+                cur_plat = request_platform(request)
+                # Pin one version snapshot for the entire response, even when
+                # an administrator changes the selection during this request.
+                ver_cfg = res_version_manager.get_version_config()
+                chosen_assethash = res_version_manager.get_assethash(platform=cur_plat, ver=ver_cfg["version"])
+            except ValueError as error:
+                return jsonify({"errorCode": "400", "errorMsg": str(error), "data": []})
+            record_client_platform(cur_plat)
             cur_ver = ver_cfg["version"]
             cur_ver_name = ver_cfg["version_name"]
-            chosen_assethash = res_version_manager.get_assethash(platform=cur_plat)
 
-            if is_ios or is_android:
+            if cur_plat in ("ios", "android"):
                 print(f"[SDK] 移动端 ({cur_plat}) 版本检查响应 -> 下发配置 (version={cur_ver}, assethash={chosen_assethash})", flush=True)
                 return jsonify({
                     "errorCode": "0",
@@ -1659,8 +1493,10 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
         import traceback
         tb = traceback.format_exc()
         print(f"[HTTPS EXCEPTION] path={request.path} host={request.host} err={e}\n{tb}", flush=True)
-        if request.path.startswith("/api/gm/"):
-            return jsonify({"code": 50000, "msg": f"服务器内部异常: {e}", "data": None}), 200
+        if request.path.startswith("/api/"):
+            return jsonify({"code": 50000, "msg": "服务器内部异常，请查看服务端日志", "data": None}), 500
+        if "/pass/user/" in request.path or "/auth/user/" in request.path:
+            return jsonify({"errorCode": "500", "data": {}, "errorMsg": "登录服务异常，请稍后再试"}), 200
         return jsonify({"errorCode": "0", "data": {}, "errorMsg": str(e)}), 200
 
     return app
@@ -1697,7 +1533,8 @@ def start_https(app, port, cert_file=None, key_file=None):
                 or self.path.startswith("/web/")
             ):
                 return
-            super().log_request(code, size)
+            # SDK query strings may contain login tokens. Log the path only.
+            self.log('info', '"%s %s" %s %s', self.command, self.path.split('?', 1)[0], code, size)
 
     # 同时在后台启动 HTTP:80 监听，专供 C# OSS SDK 免证书免 DNS 极速直传
     def _start_http():

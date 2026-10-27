@@ -108,7 +108,6 @@ BUILTIN_VERSION_CONFIGS: Dict[str, Dict[str, Any]] = {
         "matched_app_version": "307",
         "assethash": {
             "pc": "assethash_307_229_3807d27e1a6e26853f1fccfa8b7681d0.bytes",
-            "android": "assethash_307_229_3807d27e1a6e26853f1fccfa8b7681d0.bytes",
             "ios": "assethash_307_229_29e8f745e8ec6032937a65a0bfd3a9cf.bytes",
         },
         "voice_package_list": "voice_package_list_307_229.bytes",
@@ -125,8 +124,6 @@ BUILTIN_VERSION_CONFIGS: Dict[str, Dict[str, Any]] = {
         "matched_app_version": "307",
         "assethash": {
             "pc": "assethash_307_311_738463f12c9b762e6650822b949bd091.bytes",
-            "android": "assethash_307_311_738463f12c9b762e6650822b949bd091.bytes",
-            "ios": "assethash_307_229_29e8f745e8ec6032937a65a0bfd3a9cf.bytes",
         },
         "voice_package_list": "voice_package_list_307_311.bytes",
         "voice_hashes": {
@@ -368,8 +365,6 @@ def detect_client_resource_version(custom_dir: Optional[str] = None) -> dict:
                         "matched_app_version": app_ver,
                         "assethash": {
                             "pc": f"assethash_{app_ver}_{extracted_ver}_{hash_md5}.bytes",
-                            "android": f"assethash_{app_ver}_{extracted_ver}_{hash_md5}.bytes",
-                            "ios": f"assethash_{app_ver}_{extracted_ver}_{hash_md5}.bytes",
                         },
                         "voice_package_list": f"voice_package_list_{app_ver}_{extracted_ver}.bytes",
                         "voice_hashes": {
@@ -457,8 +452,6 @@ def detect_client_resource_version(custom_dir: Optional[str] = None) -> dict:
             "matched_app_version": app_ver,
             "assethash": {
                 "pc": latest_entry["filename"],
-                "android": latest_entry["filename"],
-                "ios": latest_entry["filename"],
             },
             "voice_package_list": f"voice_package_list_{app_ver}_{extracted_ver}.bytes",
             "voice_hashes": {
@@ -584,9 +577,14 @@ def get_all_version_configs() -> List[dict]:
 
 
 def get_assethash(platform: str = "pc", ver: Optional[str] = None) -> str:
+    from client_platform import normalize_platform
     cfg = get_version_config(ver)
-    plat = str(platform).lower() if platform else "pc"
-    return cfg["assethash"].get(plat, cfg["assethash"]["pc"])
+    plat = normalize_platform(platform)
+    filename = cfg.get("assethash", {}).get(plat)
+    match = ASSETHASH_PATTERN.fullmatch(filename) if isinstance(filename, str) else None
+    if not plat or not match or match.group(2) != str(cfg["version"]):
+        raise ValueError(f"Build {cfg['version']} 缺少 {plat or '指定平台'} 的有效资源清单，请先导入该平台清单")
+    return filename
 
 
 def get_voice_package_list(ver: Optional[str] = None) -> str:
@@ -719,14 +717,20 @@ def calculate_manifest_diff(local_ver: Optional[str] = None, remote_ver: Optiona
 
     # 获取本地清单
     local_cfg = get_version_config(local_ver)
-    local_hash_fn = local_cfg["assethash"].get(plat, local_cfg["assethash"]["pc"])
+    try:
+        local_hash_fn = get_assethash(plat, local_ver)
+    except ValueError as error:
+        return {"success": False, "error": str(error), "local_version": local_ver}
     local_manifest = _load_manifest_content(plat, local_hash_fn)
 
     # 获取远端版本信息
     remote_info = {}
     if remote_ver and remote_ver in VERSION_CONFIGS:
         rem_cfg = get_version_config(remote_ver)
-        remote_hash_fn = rem_cfg["assethash"].get(plat, rem_cfg["assethash"]["pc"])
+        try:
+            remote_hash_fn = get_assethash(plat, remote_ver)
+        except ValueError as error:
+            return {"success": False, "error": str(error), "local_version": local_ver}
         remote_info = {
             "version": remote_ver,
             "version_name": rem_cfg.get("version_name", remote_ver),

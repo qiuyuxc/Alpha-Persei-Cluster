@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && node scripts/inline.mjs",
+    "build:sub": "vite build --config vite.sub.config.ts",
     "shot": "node scripts/shot.mjs",
     "preview": "vite preview",
     "check": "tsc --noEmit"

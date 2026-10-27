@@ -2,9 +2,10 @@
 """battle_server.py — V5 动态战斗服（UDP/KCP，XServer 协议）
 
 由 V4.1 battle_server_udp.py（对齐 2026-08-07 材料本战斗流程记录.pcapng 实测格式）移植，
-协议层原样保留，工程层重写：
+保留实测报文格式，工程层重写：
 - 修复 V4.1 _frame_loop 用 client_id（int）当地址发帧导致帧线程首帧即死的缺陷
-- 参数化原硬编码常量（Pong 收敛差值序列 / 134+135 重传节奏 / 帧间隔）
+- 参数化原硬编码常量（Pong 收敛差值序列 / KCP 重传节奏 / 帧间隔）
+- KCP 接收去重、按序重组，未确认响应按原序号重传；开始与结算事件幂等
 - 会话表加锁（UDP 线程与帧线程并发）；闲置会话自动回收
 - 结算结果登记（battle_id → result），供 TCP 侧 h_54032 结算引擎取用（V5 不再从
   UDP 线程裸写 game socket——客户端战毕必然回发 cs_54032，被动应答即够）
@@ -15,7 +16,7 @@
             客户端按 20B 解析，24B 带 conv 会被 PeekSize=-1 判废丢弃）
 - 帧：      [flag 1B][opcode u16 LE][rpc u32 LE（仅 flag=1/2）][body]
 - Pong(101) body = [clientTime u64 LE][serverTime u64 LE] 裸二进制（非 protobuf）
-- start_match(125) = flag 0 + 空 body；Ack_BattleResult(134) = flag 2 + rpc 回显 + 空 body
+- start_match(125) = flag 0 + 空 body；Ack_BattleResult(134) = flag 2 + rpc 回显 + body{1:result}
 - Ack_BattleGSResult(135) = flag 0 + body{1:1}；ACK9 握手 = [type=2][conn][conv] 9B 无段
 """
 import socket
@@ -51,10 +52,18 @@ DEFAULT_PORT = 6105
 # Pong serverTime 与 clientTime 的差值序列：前几次真实波动、随后收敛——
 # 客户端 SyncTime 校验收敛过程，恒定差值会被判未同步（pcapng 实测曲线）
 PONG_DELTAS = (-585, -313, -338, -315)
-RESULT_RESEND = 8          # 134/135 重传次数（真实服 ~10 次，补偿客户端结算跳转瞬间暂停收包）
-RESULT_RESEND_INTERVAL = 0.08
 FRAME_INTERVAL = 0.033     # 30fps Server_Frame
 SESSION_IDLE_TIMEOUT = 600  # 会话闲置回收（秒）
+KCP_RCV_WINDOW = 256
+KCP_PENDING_LIMIT = 4096
+KCP_RETRY_INTERVAL = 0.2
+KCP_RETRY_MAX_INTERVAL = 2.0
+KCP_MAX_MESSAGE = 1024 * 1024
+
+
+def _sn_diff(left, right):
+    """KCP uint32 sequence comparison, including wraparound."""
+    return ((left - right + 0x80000000) & 0xFFFFFFFF) - 0x80000000
 
 
 def _u64(v):
@@ -225,7 +234,7 @@ class BattleServer:
         self.on_result = on_result
         self.server_ts = server_ts   # Unix 秒，可含小数；Pong 在线路上使用毫秒，None 保留兼容序列
         self.running = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._conns = {}             # client_id -> session
         self._results = {}           # battle_id -> result（132 上报登记，TCP 侧结算取用）
         self._pong_seq = {}          # client_id -> 收敛序列游标
@@ -262,27 +271,104 @@ class BattleServer:
             pass
 
     def _send_kcp(self, addr, st, cmd, data, sn=None, ts=None):
-        if ts is None:
-            ts = int(time.time() * 1000) & 0xFFFFFFFF
-        if sn is None:
-            st["sn"] = (st["sn"] + 1) & 0xFFFFFFFF
-            sn = st["sn"]
-        seg = kcp_encode_seg_noconv(cmd, 256, ts, sn, st.get("ack_una", 0), data)
-        self._send_pkt(addr, st["conn"], st["conv"], seg)
+        with self._lock:
+            if ts is None:
+                ts = int(time.time() * 1000) & 0xFFFFFFFF
+            if sn is None:
+                if len(st["send_buf"]) >= KCP_PENDING_LIMIT:
+                    raise RuntimeError("KCP unacknowledged send limit reached")
+                st["sn"] = (st["sn"] + 1) & 0xFFFFFFFF
+                sn = st["sn"]
+                if cmd == KCP_CMD_PUSH:
+                    st["send_buf"][sn] = {
+                        "data": data, "ts": ts, "rto": KCP_RETRY_INTERVAL,
+                        "retry_at": time.monotonic() + KCP_RETRY_INTERVAL,
+                    }
+            seg = kcp_encode_seg_noconv(
+                cmd, KCP_RCV_WINDOW - len(st["recv_buf"]), ts, sn, st["rcv_nxt"], data)
+            self._send_pkt(addr, st["conn"], st["conv"], seg)
+            return sn
 
     def _send_frame(self, addr, st, opcode, body, flag=2, rpc_id=0, ts=None):
-        self._send_kcp(addr, st, KCP_CMD_PUSH, xs_encode_frame(opcode, body, flag, rpc_id), ts=ts)
+        return self._send_kcp(addr, st, KCP_CMD_PUSH,
+                              xs_encode_frame(opcode, body, flag, rpc_id), ts=ts)
+
+    def _retry_sn(self, st, sn):
+        """Resend an unacknowledged event with its original sequence and bytes."""
+        pending = st["send_buf"].get(sn)
+        if pending is not None:
+            self._send_kcp(st["addr"], st, KCP_CMD_PUSH, pending["data"],
+                           sn=sn, ts=pending["ts"])
+
+    def _retransmit_pending(self, now=None):
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            for st in self._conns.values():
+                for sn, pending in st["send_buf"].items():
+                    if now >= pending["retry_at"]:
+                        self._retry_sn(st, sn)
+                        pending["rto"] = min(pending["rto"] * 2, KCP_RETRY_MAX_INTERVAL)
+                        pending["retry_at"] = now + pending["rto"]
+
+    def _ack_sent(self, st, seg):
+        # Peer una acknowledges OUR sends. It must never advance OUR receive cursor.
+        una = seg["una"]
+        if _sn_diff(una, (st["sn"] + 1) & 0xFFFFFFFF) <= 0:
+            for sn in list(st["send_buf"]):
+                if _sn_diff(sn, una) < 0:
+                    del st["send_buf"][sn]
+        if seg["cmd"] == KCP_CMD_ACK:
+            st["send_buf"].pop(seg["sn"], None)
+
+    def _receive_push(self, st, seg):
+        distance = _sn_diff(seg["sn"], st["rcv_nxt"])
+        if distance >= KCP_RCV_WINDOW:
+            return  # Do not acknowledge data outside the receive window.
+        frames = []
+        if distance >= 0:
+            st["recv_buf"].setdefault(seg["sn"], seg)
+            while st["rcv_nxt"] in st["recv_buf"]:
+                part = st["recv_buf"].pop(st["rcv_nxt"])
+                st["rcv_nxt"] = (st["rcv_nxt"] + 1) & 0xFFFFFFFF
+                expected = st["pkt_frg"]
+                if expected is not None and part["frg"] != expected:
+                    st["pkt_buf"], st["pkt_frg"] = b"", None
+                    self.log("[BattleSrv] discarded invalid KCP fragment sequence")
+                    continue
+                st["pkt_buf"] += part["data"]
+                if len(st["pkt_buf"]) > KCP_MAX_MESSAGE:
+                    st["pkt_buf"], st["pkt_frg"] = b"", None
+                    raise ValueError("KCP message exceeds receive limit")
+                if part["frg"]:
+                    st["pkt_frg"] = part["frg"] - 1
+                else:
+                    frames.append((st["pkt_buf"], part["sn"], part["ts"]))
+                    st["pkt_buf"], st["pkt_frg"] = b"", None
+        else:
+            st["duplicate_pushes"] += 1
+        # ACK duplicates too: the original ACK may have been lost. Only contiguous,
+        # complete messages reach the application, even after loss or reordering.
+        self._send_kcp(st["addr"], st, KCP_CMD_ACK, b"", sn=seg["sn"], ts=seg["ts"])
+        for data, sn, ts in frames:
+            self._handle_frame(data, st, sn, ts)
 
     # ---------- 接收 ----------
     def _new_session(self, client_id, server_id, addr):
         st = {"conn": server_id, "conv": client_id, "client_id": client_id,
-              "ts": 0, "sn": -1, "ack_una": 0, "frame_count": 0, "started": False,
-              "sn_peer_base": None, "addr": addr, "last_seen": time.time(),
-              "entry_started": time.monotonic(), "entry_pings": 0}
+              "ts": 0, "sn": -1, "frame_count": 0, "started": False,
+              "send_initialized": False, "addr": addr, "last_seen": time.time(),
+              "entry_started": time.monotonic(), "entry_pings": 0,
+              "rcv_nxt": 0, "recv_buf": {}, "send_buf": {},
+              "pkt_buf": b"", "pkt_frg": None, "duplicate_pushes": 0,
+              "battle_events": {}}
         self._conns[client_id] = st
         return st
 
     def _handle_pkt(self, data, addr):
+        with self._lock:
+            self._handle_pkt_locked(data, addr)
+
+    def _handle_pkt_locked(self, data, addr):
         if len(data) < 5:
             return
         typ = data[0]
@@ -296,7 +382,14 @@ class BattleServer:
                          if len(data) >= 11 and data[2] == 1 else local_conn)
             server_id = (int(time.time() * 1000) ^ 0x11A04C54 ^ client_id) & 0xFFFFFFFF
             with self._lock:
-                st = self._new_session(client_id, server_id, addr)
+                st = self._conns.get(client_id)
+                if st is None:
+                    st = self._new_session(client_id, server_id, addr)
+                elif st["addr"][0] != addr[0]:
+                    return
+                else:
+                    st["addr"], st["last_seen"] = addr, time.time()
+                    server_id = st["conn"]
             self.log(f"[BattleSrv] SYN client={client_id} server={server_id} -> ACK9")
             self._send_ack9(addr, server_id, client_id)
             return
@@ -305,12 +398,14 @@ class BattleServer:
             if not st:
                 client_id = struct.unpack_from("<I", data, 5)[0]
                 with self._lock:
-                    self._new_session(client_id, local_conn, addr)
+                    if client_id not in self._conns:
+                        self._new_session(client_id, local_conn, addr)
             return
 
         if typ in (FIN, ERR):
             with self._lock:
                 self._conns.pop(cid, None)
+                self._pong_seq.pop(cid, None)
             return
 
         if typ != MSG:
@@ -333,36 +428,21 @@ class BattleServer:
                 off += 2
         while off + 24 <= len(data):
             seg = kcp_parse_seg(data[off:])
-            if not seg:
+            if not seg or seg["conv"] != st["conn"]:
                 break
             off += 24 + seg["len"]
-            # sn 序号空间对齐：客户端 sn 全局累计（千级起步），服务器首 sn 必须落在
-            # 客户端 rcv_nxt 上，否则被判旧段丢弃、客户端 PeekSize=0 卡死
-            if st.get("sn_peer_base") is None and seg["cmd"] == KCP_CMD_PUSH:
-                st["sn_peer_base"] = seg["sn"]
-                st["sn"] = (seg["sn"] - 1) & 0xFFFFFFFF
-                self.log(f"[BattleSrv] 序号对齐: 客户端首 sn={seg['sn']}")
-            if seg["cmd"] == KCP_CMD_ACK:
-                st["ack_una"] = max(st.get("ack_una", 0), seg["una"])
+            if seg["cmd"] not in (KCP_CMD_PUSH, KCP_CMD_ACK, KCP_CMD_WASK, KCP_CMD_WINS):
                 continue
-            if seg["cmd"] == KCP_CMD_PUSH and seg["data"]:
-                st["ack_una"] = max(st.get("ack_una", 0), (seg["sn"] + 1) & 0xFFFFFFFF)
-                self._send_kcp(st.get("addr", addr), st, KCP_CMD_ACK, b"",
-                               sn=seg["sn"], ts=seg["ts"])
-                # 分片重组：frg>0 缓冲，frg=0 末段拼接交付
-                if seg["frg"] > 0:
-                    st["pkt_buf"] = st.get("pkt_buf", b"") + seg["data"]
-                    st["pkt_frg"] = seg["frg"]
-                else:
-                    if st.get("pkt_frg", -1) > 0:
-                        full = st.get("pkt_buf", b"") + seg["data"]
-                        st["pkt_buf"], st["pkt_frg"] = b"", -1
-                        self._handle_frame(full, st, seg["sn"], seg["ts"])
-                    else:
-                        self._handle_frame(seg["data"], st, seg["sn"], seg["ts"])
-            elif seg["cmd"] in (KCP_CMD_WASK, KCP_CMD_WINS):
-                self._send_kcp(st.get("addr", addr), st, KCP_CMD_ACK, b"",
-                               sn=0xFFFFFFFF, ts=seg["ts"])
+            if not st["send_initialized"]:
+                st["send_initialized"] = True
+                # Independent sequence spaces: peer una is its next expected SERVER
+                # sequence, whereas peer sn numbers CLIENT data (2026-10-26 capture).
+                st["sn"] = (seg["una"] - 1) & 0xFFFFFFFF
+            self._ack_sent(st, seg)
+            if seg["cmd"] == KCP_CMD_PUSH:
+                self._receive_push(st, seg)
+            elif seg["cmd"] == KCP_CMD_WASK:
+                self._send_kcp(st["addr"], st, KCP_CMD_WINS, b"", sn=0, ts=seg["ts"])
 
     def _handle_frame(self, fbuf, st, kcp_sn=0, kcp_ts=0):
         f = xs_parse_frame(fbuf)
@@ -403,17 +483,22 @@ class BattleServer:
             st["role_id"] = role_id
             self._send_frame(addr, st, OP_ACK_JOIN_ROOM,
                              enc_ack_join_room(battle_id, 1, role_id), rpc_id=rpc)
-            self._send_frame(addr, st, OP_START_MATCH, b"", flag=0)
         elif op == OP_PLAYER_READY:
             ready_started = time.monotonic()
             uuid_v, battle_id = parse_player_ready(f["body"])
+            event = st["battle_events"].setdefault(battle_id, {})
             st["battle_id"] = battle_id
             st["player_ready"] = True
             # ack field1 = battle_id（客户端 Ready 存 packet+24），再推 start_match
             self._send_frame(addr, st, OP_ACK_PLAYER_READY,
                              enc_ack_player_ready(battle_id or 1), rpc_id=rpc)
-            self._send_frame(addr, st, OP_START_MATCH, b"", flag=0)
-            st["started"] = True
+            if "start_sn" not in event and "result" not in event:
+                event["start_sn"] = self._send_frame(addr, st, OP_START_MATCH, b"", flag=0)
+                st["started"] = True
+                self.log(f"[BattleSrv] StartMatch bid={battle_id} client={st['client_id']} "
+                         f"rpc={rpc} recv_sn={kcp_sn} send_sn={event['start_sn']}")
+            elif "start_sn" in event and "result" not in event:
+                self._retry_sn(st, event["start_sn"])
             if not st.get("entry_ready_logged"):
                 st["entry_ready_logged"] = True
                 now = time.monotonic()
@@ -427,20 +512,29 @@ class BattleServer:
             self._send_frame(addr, st, OP_ACK_FETCH_TEAM_INFO, b"", rpc_id=rpc)
         elif op == OP_BATTLE_RESULT:
             bid, uuid_v, result, info = parse_battle_result(f["body"])
-            self.log(f"[BattleSrv] BattleResult bid={bid} result={result} info={info}")
+            event = st["battle_events"].setdefault(bid, {})
             st["started"] = False
             # 先登记再重传（实机 2026-08-22：客户端 cs_54032 在 134/135 重传窗口 ~0.6s
             # 内就到达，晚登记会被结算引擎"缺记从宽按胜利"兜底吞掉——失败被按胜利结算）
-            with self._lock:
-                self._results[bid] = {"result": result, "info": info}
-            if self.on_result:
-                try:
-                    self.on_result(bid, result)
-                except Exception as e:
-                    self.log(f"[BattleSrv] on_result 回调异常: {e}")
+            if "result" not in event:
+                event["result"] = result
+                self.log(f"[BattleSrv] BattleResult bid={bid} result={result} info={info} "
+                         f"duplicate_pushes={st['duplicate_pushes']}")
+                with self._lock:
+                    self._results[bid] = {"result": result, "info": info}
+                if self.on_result:
+                    try:
+                        self.on_result(bid, result)
+                    except Exception as e:
+                        self.log(f"[BattleSrv] on_result 回调异常: {e}")
+            result = event["result"]
             # 收到 132 战报，精准回发 134(ACK, flag=2, rpc回显, 携带对应result) 与 135(GS_ACK, flag=0, 携带对应code=result)
             self._send_frame(addr, st, OP_ACK_BATTLE_RESULT, enc_ack_battle_result(result), rpc_id=rpc)
-            self._send_frame(addr, st, OP_ACK_BATTLE_GS_RESULT, enc_ack_battle_gs_result(result), flag=0)
+            if "result_sn" not in event:
+                event["result_sn"] = self._send_frame(
+                    addr, st, OP_ACK_BATTLE_GS_RESULT, enc_ack_battle_gs_result(result), flag=0)
+            else:
+                self._retry_sn(st, event["result_sn"])
         elif op in (0, 123):
             # 客户端战斗帧上传（op=0 握手期 / 123 战斗中，失败抓包 2026-08-09 实测：
             # 132 上报后客户端仍持续发 123 直至 FIN）——传输层 KCP ACK 已确认，无需应用层响应
@@ -460,13 +554,13 @@ class BattleServer:
             with self._lock:
                 sessions = [(st["addr"], st) for st in self._conns.values()
                             if st.get("started") and st.get("is_multiplayer")]
-            for addr, st in sessions:
-                st["frame_count"] += 1
-                try:
-                    self._send_frame(addr, st, OP_SERVER_FRAME,
-                                     enc_server_frame(st["frame_count"]), flag=0)
-                except Exception:
-                    pass
+                for addr, st in sessions:
+                    st["frame_count"] += 1
+                    try:
+                        self._send_frame(addr, st, OP_SERVER_FRAME,
+                                         enc_server_frame(st["frame_count"]), flag=0)
+                    except Exception:
+                        pass
 
     def _gc_loop(self):
         while self.running:
@@ -477,6 +571,7 @@ class BattleServer:
                         if now - st.get("last_seen", now) > SESSION_IDLE_TIMEOUT]
                 for cid in dead:
                     self._conns.pop(cid, None)
+                    self._pong_seq.pop(cid, None)
                 # 结果登记表只留最近 200 条
                 if len(self._results) > 200:
                     for k in list(self._results.keys())[:-200]:
@@ -490,6 +585,7 @@ class BattleServer:
         threading.Thread(target=self._gc_loop, daemon=True).start()
         self.log(f"[BattleSrv] UDP 战斗服监听 :{self.port}")
         while self.running:
+            self._retransmit_pending()
             try:
                 data, addr = self.sock.recvfrom(65535)
             except socket.timeout:

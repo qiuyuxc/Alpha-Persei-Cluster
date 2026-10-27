@@ -31,6 +31,7 @@ import {
   SearchField,
 } from '@heroui/react'
 import { PageHeader, StatCard } from '../components/kit'
+import { HeroActions } from '../components/HeroActions'
 import { useServer } from '../lib/serverContext'
 import {
   fetchHeroesList,
@@ -194,6 +195,7 @@ function addAttachmentToMailDraft(item: {
 
 export default function HeroesPanel() {
   const { activeUid, isOnline } = useServer()
+  const [managementRevision, setManagementRevision] = useState(0)
   const [stats, setStats] = useState<HeroStatsData | null>(null)
   const [heroes, setHeroes] = useState<HeroEntry[]>(defaultHeroesList)
   const [selectedHeroId, setSelectedHeroId] = useState<number | null>(() => {
@@ -217,7 +219,7 @@ export default function HeroesPanel() {
     return 'base'
   })
   const [detail, setDetail] = useState<HeroFullDetail | null>(null)
-  const [, setDetailLoading] = useState(false)
+  const [detailLoading, setDetailLoading] = useState(false)
   const [selectedEquipSlot, setSelectedEquipSlot] = useState<number>(1)
   const [selectedTransitionSlot, setSelectedTransitionSlot] = useState<number>(1)
 
@@ -251,6 +253,7 @@ export default function HeroesPanel() {
 
   useEffect(() => {
     let mounted = true
+    setStats(null)
     if (!isOnline) {
       setStats(null)
       setHeroes(defaultHeroesList)
@@ -260,7 +263,7 @@ export default function HeroesPanel() {
     fetchHeroesList(activeUid)
       .then((res) => {
         if (!mounted) return
-        if (res.data) {
+        if (res.code === 0 && res.data) {
           if (res.data.heroes && res.data.heroes.length > 0) {
             setHeroes(res.data.heroes)
           }
@@ -279,7 +282,7 @@ export default function HeroesPanel() {
     return () => {
       mounted = false
     }
-  }, [activeUid, isOnline])
+  }, [activeUid, isOnline, managementRevision])
 
   // 过滤与排序计算
   const filteredHeroes = useMemo(() => {
@@ -631,6 +634,7 @@ export default function HeroesPanel() {
       return
     }
 
+    setDetail(null)
     setDetailLoading(true)
     fetchHeroDetail(selectedHero.id, activeUid)
       .then((res) => {
@@ -657,7 +661,7 @@ export default function HeroesPanel() {
     return () => {
       mounted = false
     }
-  }, [selectedHero.id, activeUid, isOnline])
+  }, [selectedHero.id, activeUid, isOnline, managementRevision])
 
   const currentDetail = useMemo(() => {
     if (
@@ -705,6 +709,10 @@ export default function HeroesPanel() {
         description="修正者全图鉴名册、神系阵营分布、誓约羁绊与基础状态监控。"
       />
 
+      {isOnline && !detail && <p className="text-sm text-warning">{detailLoading ? '正在读取角色详情…' : '尚未读取到角色详情，下方为图鉴预览，不代表实际养成状态。'}</p>}
+      <HeroActions key={activeUid} uid={activeUid} heroId={selectedHero.id} name={selectedHero.official_name}
+        enabled={isReady && !!detail} onChanged={() => setManagementRevision(value => value + 1)} />
+
       {/* 服务未启动提示 */}
       {!isOnline && (
         <div className="flex items-center gap-2.5 rounded-xl border border-warning/30 bg-warning-soft/30 px-4 py-3 text-xs text-warning-soft-foreground">
@@ -719,7 +727,7 @@ export default function HeroesPanel() {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <StatCard
           label="角色数量"
-          value={isReady ? String(stats.owned_count) : '当前服务器暂未启动'}
+          value={isReady ? String(stats.owned_count) : (isOnline ? '数据未就绪' : '未连接')}
           unit={isReady ? `/ ${stats.total_official}` : undefined}
           icon={Users}
           tone={isReady ? 'accent' : 'default'}
@@ -729,7 +737,7 @@ export default function HeroesPanel() {
         />
         <StatCard
           label="誓约角色数量"
-          value={isReady ? String(stats.oath_count) : '当前服务器暂未启动'}
+          value={isReady ? String(stats.oath_count) : (isOnline ? '数据未就绪' : '未连接')}
           unit={isReady ? '位' : undefined}
           icon={Heart}
           tone={isReady ? 'danger' : 'default'}
@@ -739,7 +747,7 @@ export default function HeroesPanel() {
         />
         <StatCard
           label="收藏角色数量"
-          value={isReady ? String(stats.favorite_count) : '当前服务器暂未启动'}
+          value={isReady ? String(stats.favorite_count) : (isOnline ? '数据未就绪' : '未连接')}
           unit={isReady ? '位' : undefined}
           icon={Star}
           tone={isReady ? 'warning' : 'default'}
@@ -749,7 +757,7 @@ export default function HeroesPanel() {
         />
         <StatCard
           label="欧米茄角色数量"
-          value={isReady ? String(stats.omega_count) : '当前服务器暂未启动'}
+          value={isReady ? String(stats.omega_count) : (isOnline ? '数据未就绪' : '未连接')}
           unit={isReady ? '位' : undefined}
           icon={Award}
           tone={isReady ? 'success' : 'default'}

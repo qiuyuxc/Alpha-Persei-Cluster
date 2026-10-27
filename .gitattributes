@@ -1,0 +1,2 @@
+# Empty hosts and trailing spaces are deliberate DNS rejection test inputs.
+lsposed-dns-module/tests/domains.tsv whitespace=-blank-at-eol

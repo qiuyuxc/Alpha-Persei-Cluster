@@ -46,6 +46,7 @@ import {
   type LaunchConfigData,
 } from '../lib/api'
 import { useServer } from '../lib/serverContext'
+import AccountManager from '../components/AccountManager'
 import avatarsCatalog from '../data/avatarsCatalog.json'
 import stickersCatalog from '../data/stickersCatalog.json'
 
@@ -528,9 +529,10 @@ export default function AccountsPanel() {
 
   return (
     <div className="space-y-6">
+      <AccountManager />
       <PageHeader
         title="账号数据"
-        description="当前单人沙盒指挥官核心画像与个性化档案。包含实时体力自然恢复对账、外观装扮与全域功能开关拓展坞。"
+        description="管理独立账号和当前选中的存档，修改角色资料、体力与外观。"
         actions={
           <Button
             size="sm"
@@ -788,7 +790,7 @@ export default function AccountsPanel() {
           <Card className="p-5 flex flex-col justify-between">
             <Card.Header className="pb-3 border-b border-separator/70 flex flex-col gap-1.5">
               {/* 标题栏主行：全部控件水平居中严格单行对齐 */}
-              <div className="flex items-center justify-between gap-2 w-full">
+              <div className="sticker-wall-heading flex items-center justify-between gap-2 w-full">
                 <div className="flex items-center gap-2 shrink-0">
                   <Layers className="size-4 text-accent shrink-0" />
                   <span className="text-sm font-bold text-foreground whitespace-nowrap">贴纸墙</span>
@@ -802,7 +804,7 @@ export default function AccountsPanel() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="sticker-wall-tools flex items-center gap-1.5 shrink-0">
                   {/* 贴纸墙翻卷切换按键组 */}
                   <div className="flex items-center rounded-lg border border-separator/70 bg-surface-secondary/50 p-0.5 h-6.5 shrink-0">
                     <Button

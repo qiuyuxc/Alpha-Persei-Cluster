@@ -1766,6 +1766,20 @@ class GMReader:
                 "num": 1,
             })
 
+        # 钥从保留独立实例 ID；前端可按 prefab 合计，但不改变游戏内资产形态。
+        for row in self.query("SELECT id,prefab_id,stage,is_locked FROM servant WHERE uid=?", (uid,)):
+            prefab = int(row.get("prefab_id") or 0)
+            items.append({"id": prefab, "instance_id": row["id"], "num": 1, "type": "servant",
+                          "level": int(row.get("stage") or 1), "star": prefab // 100000 % 10,
+                          "locked": bool(row.get("is_locked"))})
+        for row in self.query("SELECT hero_id,num FROM hero_piece WHERE uid=? AND num>0", (uid,)):
+            items.append({"id": 10000 + int(row["hero_id"]), "num": row["num"], "type": "hero_piece"})
+        catalog = {int(row["id"]): row for row in self.query("SELECT id,name,type,rare FROM item_catalog")}
+        for item in items:
+            meta = catalog.get(int(item["id"]), {})
+            item["name"] = meta.get("name") or f"物品 #{item['id']}"
+            item["item_type"] = meta.get("type") or 0
+            item["rare"] = meta.get("rare") or item.get("star") or 1
         return {
             "uid": uid,
             "total": len(items),
@@ -1825,6 +1839,8 @@ class GMReader:
                 "attachments": attach_list,
                 "rewards": attach_list,
                 "send_time": r.get("send_time", 0),
+                "expire_time": r.get('expire_time', 0),
+                "is_expired": 0 < int(r.get('expire_time') or 0) <= int(time.time()),
                 "read_flag": r.get("read_flag", 1),
                 "attach_flag": r.get("attach_flag", 1),
                 "is_read": r.get("read_flag", 1) == 2,

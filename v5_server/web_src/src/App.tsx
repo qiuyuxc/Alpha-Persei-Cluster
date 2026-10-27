@@ -3,6 +3,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   Bot,
   Boxes,
+  Clock3,
   Database,
   Hexagon,
   Info,
@@ -24,6 +25,7 @@ import { Avatar, Button, Chip, SearchField, Separator, Tabs } from '@heroui/reac
 import { IconBadge, StatusDot } from './components/kit'
 import { ThemeProvider, useTheme } from './lib/theme'
 import AccountsPanel from './panels/Accounts'
+import AutomationPanel from './panels/Automation'
 import AgreementPanel from './panels/Agreement'
 import AIChatPanel from './panels/AIChat'
 import GachaPanel from './panels/Gacha'
@@ -36,6 +38,7 @@ import ShopPanel from './panels/Shop'
 import { ErrorBoundary } from './components/ErrorBoundary'
 
 import { ServerProvider, useServer } from './lib/serverContext'
+import AuthGate from './components/AuthGate'
 
 type NavItem = {
   id: string
@@ -54,6 +57,7 @@ const NAV: NavItem[] = [
   { id: 'inventory', label: '资源背包', icon: Boxes, Panel: InventoryPanel },
   { id: 'mail', label: '邮件系统', icon: Mail, Panel: MailPanel, badge: '1' },
   { id: 'gacha', label: '卡池管理', icon: Sliders, Panel: GachaPanel },
+  { id: 'automation', label: '周期与自动化', icon: Clock3, Panel: AutomationPanel },
   { id: 'shop', label: '商店系统', icon: ShoppingBag, Panel: ShopPanel },
   { id: 'aichat', label: 'AI修正者聊天', icon: Bot, Panel: AIChatPanel, badge: 'NEW' },
   { id: 'settings', label: '其他设置', icon: Settings, Panel: SettingsPanel, groupStart: true },
@@ -135,6 +139,15 @@ function TopBar({ onSelectTab }: TopBarProps) {
         tabId: 'gacha',
         keywords: ['卡池', '抽卡', '探测', '保底', '防歪', '70抽', '90抽', '自选', 'gacha', 'draw'],
         icon: Sliders,
+      },
+      {
+        id: 'automation',
+        title: '周期与自动化',
+        desc: '对策协议周期、日周任务刷新、卡池轮换顺序与等级自动邮件礼包',
+        category: '导航',
+        tabId: 'automation',
+        keywords: ['周期', '自动', '轮换', '签到', '等级', '礼包', '对策协议', '邮件', 'automation', 'schedule'],
+        icon: Clock3,
       },
       {
         id: 'shop',
@@ -554,11 +567,16 @@ function Console() {
 }
 
 export default function App() {
+  if (location.pathname.endsWith('/agreement.html')) {
+    return <ThemeProvider><AgreementPanel standalone /></ThemeProvider>
+  }
   return (
     <ThemeProvider>
+      <AuthGate portal={location.pathname.endsWith('/account.html')}>
       <ServerProvider>
         <Console />
       </ServerProvider>
+      </AuthGate>
     </ThemeProvider>
   )
 }

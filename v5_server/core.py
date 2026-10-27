@@ -103,7 +103,7 @@ class Connection:
 
     __slots__ = ("uid", "db", "generator", "codec_encode", "codec_decode",
                  "log", "battle_id", "battle_stage", "battle_seq",
-                 "chat_srv", "seq", "_ctx", "send_push")
+                 "chat_srv", "seq", "_ctx", "send_push", "initialized")
 
     def __init__(self, uid=0, db=None, generator=None, codec_encode=None, codec_decode=None,
                  log=None):
@@ -120,6 +120,7 @@ class Connection:
         self.seq = [0]          # 帧序（登录洪流/推送用，SERVER NET 或 CORE 维护）
         self._ctx = None
         self.send_push = None
+        self.initialized = False
 
     def to_handler_ctx(self):
         """转 HandlerCtx（middleware handler 用）；懒创建并保持单例。"""
@@ -787,12 +788,21 @@ class Core:
 
         # 此时的摘要属于已完成的pulse，避免后续购买刷新把旧摘要排在新摘要之后。
         pulse_mail_summaries = self._take_pending_mail_summaries(ctx)
+        pulse_cycle_frames = self._take_pending_cycle_frames(ctx)
+
+        # Social protocols own their atomic state and post-commit channel pushes.
+        # Handle them before generic templates can acknowledge without persisting.
+        from social_protocol import COMMANDS as social_commands, dispatch as dispatch_social
+        if cs_req.cmd in social_commands:
+            return self._finish_mail_summary_response(
+                CoreResponse.from_cs_response(dispatch_social(cs_req, ctx)), ctx,
+                pulse_mail_summaries, pulse_cycle_frames)
 
         # 0. OPERATIONS：操作调度（玩家操作 → 解析/校验/计算/落库/双端响应）
         op = OPERATIONS.get(cs_req.cmd)
         if op is not None:
             return self._finish_mail_summary_response(
-                self._run_operation(op, cs_req, ctx), ctx, pulse_mail_summaries)
+                self._run_operation(op, cs_req, ctx), ctx, pulse_mail_summaries, pulse_cycle_frames)
         # 1-4. 响应调度（middleware 链）
         resp = _dispatch(cs_req, ctx)
         if getattr(ctx, "log", None):
@@ -800,7 +810,7 @@ class Core:
             src = (getattr(resp, "src", "") or "?") if resp is not None else "no-reply"
             ctx.log(f"cs_{cs_req.cmd} -> 响应 {n} 帧({src})", "DEBUG", module="CORE", cmd=cs_req.cmd, to_console=False)
         return self._finish_mail_summary_response(
-            CoreResponse.from_cs_response(resp), ctx, pulse_mail_summaries)
+            CoreResponse.from_cs_response(resp), ctx, pulse_mail_summaries, pulse_cycle_frames)
 
     def _take_pending_mail_summaries(self, ctx):
         pending = getattr(ctx, "pending_frames", None)
@@ -809,9 +819,20 @@ class Core:
             pending[:] = [f for f in pending if f.cmd != 30001]
         return summaries
 
-    def _finish_mail_summary_response(self, response, ctx, pulse_summaries=()):
+    def _take_pending_cycle_frames(self, ctx):
+        pending = getattr(ctx, 'pending_frames', None)
+        frames = [f for f in (pending or []) if f.cmd in (28001, 34031, 17023, 11001, 16015)]
+        if frames:
+            pending[:] = [f for f in pending if f.cmd not in (28001, 34031, 17023, 11001, 16015)]
+        return frames
+
+    def _finish_mail_summary_response(self, response, ctx, pulse_summaries=(), pulse_cycle_frames=()):
         """交付尚未消费的邮件摘要，包括普通心跳/无业务回执出口。"""
         summaries = [*pulse_summaries, *self._take_pending_mail_summaries(ctx)]
+        for frame in pulse_cycle_frames:
+            if not any(f['sc'] == frame.cmd for f in response.frames):
+                response.frames.append({'sc': frame.cmd, 'payload': frame.payload, 'flag': frame.flag, 'srv': frame.srv})
+                response.reply = True
         # 操作生成的摘要晚于前置pulse，优先使用它，购买路径不重复推送。
         if not any(f["sc"] == 30001 for f in response.frames):
             if not summaries:
@@ -930,6 +951,9 @@ class Core:
                 if f_sc == 28007:
                     continue
                 pl = bytes.fromhex(f["hex"]) if f.get("hex") else _mw.fallback_payload(f_sc)
+                from fresh_profile import is_fresh, fallback_payload
+                if is_fresh(ctx.db, cs_req.uid):
+                    pl = fallback_payload(ctx.db, cs_req.uid, f_sc)
                 if pl is None:
                     continue
                 frames.append(DownFrame(f_sc, pl, flag=int(f.get("flag", 0)), srv=f.get("srv")))

@@ -36,7 +36,7 @@ def rebuild(header, payload):
     return struct.pack(">H", len(body)) + body
 
 
-def send_login_flood(sock, db, uid, generator, frame_delay=0.001, log=None):
+def send_login_flood(sock, db, uid, generator, frame_delay=0.001, log=None, auth_context=None):
     """发送登录洪流：
     - dynamic=1 帧优先调用 generator 业务生成器动态生成；
     - dynamic=0 帧从 payload_json 读取字典并通过 codec.encode 现场编码；
@@ -57,6 +57,9 @@ def send_login_flood(sock, db, uid, generator, frame_delay=0.001, log=None):
     # 中索引 ActivityCfg[nil] 并卡死大厅 Loading。这里必须跳过整帧，不能返回 None 走 blob 兜底。
     login_ver_cfg = _rvm.get_version_config(login_res_version)
     suppressed_cmds = set(login_ver_cfg.get("suppressed_cmds", set()))
+    from fresh_profile import is_fresh, static_payload
+    fresh = is_fresh(db, uid)
+    auth_context = auth_context or {}
     sent = dyn_hit = 0
     sock.settimeout(5)
 
@@ -77,6 +80,18 @@ def send_login_flood(sock, db, uid, generator, frame_delay=0.001, log=None):
     except Exception:
         _codec_encode = None
 
+    def send_social_extras():
+        nonlocal sent, dyn_hit
+        if generator is None:
+            return
+        from social_protocol import login_payload
+        for social_cmd in (27005, 27007, 27023, 31979):
+            if any(row[1] == social_cmd for row in frames):
+                continue
+            sock.sendall(generator.build_frame(social_cmd, login_payload(db, uid, social_cmd)))
+            sent += 1
+            dyn_hit += 1
+
     try:
         for seq, cmd, header, blob, dynamic, payload_json in frames:
             if cmd in suppressed_cmds:
@@ -86,21 +101,47 @@ def send_login_flood(sock, db, uid, generator, frame_delay=0.001, log=None):
                     "INFO",
                 )
                 continue
+            if cmd == 31001:
+                import social_service
+                social_service.initialize(db)
+                if not social_service.membership(db, uid):
+                    # Lua protobuf exposes absent club fields as defaults (id=0,
+                    # icon=0). Sending an empty 31001 makes the client believe
+                    # it joined guild 0, then its main page indexes icon 0.
+                    # Preserve GuildData.Init's genuinely empty membership.
+                    send_social_extras()
+                    continue
             gen = None
+            social_snapshot = cmd in (27005, 27007, 27023, 31001, 31979, 33001)
+            if social_snapshot:
+                # Captured login rows can mark Boss data as static. Social
+                # state must always come from this player's current membership.
+                from social_protocol import login_payload
+                gen = login_payload(db, uid, cmd)
+            if cmd in auth_context:
+                gen = _codec_encode(f"sc_{cmd}", auth_context[cmd])
+            if fresh and cmd == 24009 and not dynamic:
+                from fresh_profile import resident_stage_payload
+                data = json.loads(payload_json) if isinstance(payload_json, str) else (payload_json or {})
+                gen = resident_stage_payload(db, uid, data)
 
             # 1. dynamic == 1 时优先使用 generator 业务生成器
-            if dynamic and generator is not None:
+            if gen is None and (dynamic or fresh) and generator is not None:
                 try:
                     gen = generator.gen_payload(
                         cmd, uid=uid, db=db, res_version=login_res_version
                     )
                 except Exception as e:
                     log(f"[login] sc_{cmd} 业务动态生成异常: {e}", "WARN")
-                    if cmd in (13009, 14009, 46011):
+                    if fresh or cmd in (13009, 14009, 46011):
                         raise RuntimeError(f"sc_{cmd} 当前资产读取失败，拒绝回退旧录制资产") from e
 
+            if fresh and gen is None:
+                data = json.loads(payload_json) if isinstance(payload_json, str) else (payload_json or {})
+                gen = static_payload(cmd, data)
+
             # 2. 非 dynamic 帧（或 generator 未实现该 cmd），走 payload_json 现场 Protobuf 编码
-            if gen is None and payload_json and _codec_encode is not None:
+            if not fresh and gen is None and payload_json and _codec_encode is not None:
                 try:
                     json_data = json.loads(payload_json) if isinstance(payload_json, str) else payload_json
                     if isinstance(json_data, dict):
@@ -136,6 +177,8 @@ def send_login_flood(sock, db, uid, generator, frame_delay=0.001, log=None):
                 frame = rebuild(header, gen)
                 dyn_hit += 1
             else:
+                if fresh:
+                    raise RuntimeError(f"sc_{cmd} 新号数据生成失败，拒绝发送模板存档")
                 # 4. 终极兜底：使用原始 blob 组帧
                 if len(header) > 2 and header[2] == 1:
                     if blob and blob[:2] not in (b"\x78\x9c", b"\x78\x01", b"\x78\xda", b"\x78\x5e"):
@@ -150,6 +193,10 @@ def send_login_flood(sock, db, uid, generator, frame_delay=0.001, log=None):
 
             sock.sendall(frame)
             sent += 1
+
+            if cmd == 31001:
+                # Legacy login tables omit chat room/history and request lists.
+                send_social_extras()
 
             # 梦境再构联动补发 45001（普通首领列表）与 45101（进阶首领列表）
             if cmd == 45201 and generator is not None:
@@ -172,18 +219,18 @@ def send_login_flood(sock, db, uid, generator, frame_delay=0.001, log=None):
                 time.sleep(frame_delay)
 
         # 多维变量联动下发 sc_11003：活动 ID/theme 与资源版本同步，
-        # stop_time 统一使用远期时间，周常刷新另由玩法状态管理。
+        # 起止时间取后台可配置的多维变量周期，周常刷新另由玩法状态管理。
         # 多维变量周期 11003 推送
         try:
-            import weekly_challenge_service as _wcs
+            import game_cycles as _gc
             from codec import encode as _c_enc
-            nxt_mon = _wcs.get_next_monday_5am()
+            poly_start, poly_stop = _gc.polyhedron_window(db)
             version_cfg = _rvm.get_version_config(login_res_version)
             p11003 = _c_enc("sc_11003", {
                 "activity": {
                     "activity_id": int(version_cfg["polyhedron_activity_id"]),
-                    "start_time": nxt_mon - 604800,
-                    "stop_time": _rvm.FAR_FUTURE_TIMESTAMP,
+                    "start_time": poly_start,
+                    "stop_time": poly_stop,
                     "state": 1,
                     "theme": int(version_cfg["theme_id"]),
                     "template": 73

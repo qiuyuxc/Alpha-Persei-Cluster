@@ -724,7 +724,8 @@ def build_hero_payload(db, uid):
         hero_id = int(r["id"])
         if not is_hero_payload_candidate(hero_id):
             continue
-        exp = load_hero_expanded(hero_id)
+        from fresh_profile import is_fresh
+        exp = None if is_fresh(db, uid) else load_hero_expanded(hero_id)
         row = _with_hero_payload_assets(r, unlocked_by_hero, servant_map)
         exp = build_hero_net_rec_from_db(row, template=exp)
         blob = encode_expanded(exp)
@@ -742,7 +743,8 @@ def build_single_hero_frame(db, uid, hero_id):
         return None
     unlocked_by_hero, servant_map = _load_hero_payload_assets(db, uid)
     row = _with_hero_payload_assets(rows[0], unlocked_by_hero, servant_map)
-    exp = build_hero_net_rec_from_db(row, template=load_hero_expanded(hero_id))
+    from fresh_profile import is_fresh
+    exp = build_hero_net_rec_from_db(row, template=None if is_fresh(db, uid) else load_hero_expanded(hero_id))
     hero_bytes = encode_expanded(exp)
     return b"\x0a" + _varint(len(hero_bytes)) + hero_bytes
 

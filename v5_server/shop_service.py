@@ -19,6 +19,7 @@ import random
 import zlib
 import re
 import logging
+from copy import deepcopy
 from codec import encode, decode
 from middleware import DownFrame
 from event_bus import bus, Events
@@ -36,6 +37,24 @@ POOL_PATH = os.path.join(BASE_DIR, "daily_shop_pool.json")
 
 # 常规代币商店（交易区）：依赖客户端本地 ShopCfg，严禁向 sc_20007 下发以防客户端崩溃
 NORMAL_SHOP_IDS = {2, 10, 11, 12, 13, 14, 20, 22, 23, 32, 41, 42, 99}
+
+# Build 321 keeps the old lucky-box descriptions, but its recharge bundle only
+# includes the dedicated popup for 30060. Advertising 30041/30043 routes the
+# client to a missing prefab and leaves its navigation stack stuck.
+MISSING_RECHARGE_POPUP_DESCRIPTIONS = frozenset({30041, 30043})
+
+
+def goods_have_client_resources(goods, detail=None):
+    """Check the description used by the client's recharge popup route."""
+    if detail is None:
+        detail = goods.get("detail") or {}
+        if isinstance(goods.get("detail_json"), str):
+            detail = json.loads(goods["detail_json"] or "{}")
+    description = (
+        detail.get("description") or goods.get("description") or
+        goods.get("item_id") or detail.get("give_id") or goods.get("give_id") or 0
+    )
+    return int(description) not in MISSING_RECHARGE_POPUP_DESCRIPTIONS
 
 # 每日采购主动刷新移转之辉（钻石）阶梯消耗（GameCurrencyBuySetting.lua 权威定义）
 # 前两次 10，3~4 次 20，5~6 次 30，7~8 次 40，9~20 次 50
@@ -285,7 +304,8 @@ class ShopService:
         1. 严格白名单隔离：仅包含付费/补给/皮肤等动态商店，普通代币商店（2, 10..41）绝不下发；
         2. 彻底清洗 GOODS_CFG 中非 Protobuf 规范的非法字段（give_id, taken_down, give），消除 Codec 警告！
         """
-        base_list = self._get_shop_cfg_base_template()
+        # Filtering and price overrides must not modify the cached capture.
+        base_list = deepcopy(self._get_shop_cfg_base_template())
         shop_cfg_map = {int(s["shop_id"]): s for s in base_list}
         dynamic_shop_ids = set(shop_cfg_map.keys())
 
@@ -303,6 +323,8 @@ class ShopService:
                 gid = int(g["goods_id"])
                 dj_str = g.get("detail_json")
                 dj = json.loads(dj_str) if dj_str else {}
+                if not goods_have_client_resources(g, dj):
+                    continue
                 db_goods_by_shop.setdefault(sid, []).append({
                     "goods_id": gid,
                     "item_id": int(g["item_id"] or 0),
@@ -341,6 +363,8 @@ class ShopService:
                 g["cost_id"] = dbg["cost_id"]
                 g["dlc"] = dj.get("dlc", 0)
                 g["description"] = dj.get("description", g.get("description", 0))
+                if not goods_have_client_resources(g):
+                    continue
                 # 洁癖化清洗：删除非 GOODS_CFG 描述符的字段
                 g.pop("give_id", None)
                 g.pop("taken_down", None)
@@ -387,6 +411,13 @@ class ShopService:
 
         return {"shop_item_cfg_list": out_shop_cfg_list}
 
+    def _get_dynamic_goods_ids(self):
+        """Use the same visible shelf for login state and subsequent refreshes."""
+        return {
+            int(shop["shop_id"]): {int(g["goods_id"]) for g in shop["goods_list"]}
+            for shop in self.get_shop_cfg_payload()["shop_item_cfg_list"]
+        }
+
     def get_shop_data_payload(self, uid):
         """
         动态生成全量 116+ 商店购买状态与限购数据（sc_20009）：
@@ -407,6 +438,7 @@ class ShopService:
 
         base_list = self._get_shop_base_template()
         base_shop_map = {int(s["shop_id"]): s for s in base_list}
+        dynamic_goods = self._get_dynamic_goods_ids()
 
         db_goods_by_shop = {}
         if self.db:
@@ -443,6 +475,8 @@ class ShopService:
             seen_gids = set()
             for g in s.get("goods_list", []):
                 gid = int(g["goods_id"])
+                if sid in dynamic_goods and gid not in dynamic_goods[sid]:
+                    continue
                 if sid == 15 and gid >= 15010000:
                     continue
                 seen_gids.add(gid)
@@ -456,6 +490,8 @@ class ShopService:
 
             if sid not in NORMAL_SHOP_IDS:
                 for gid in db_goods_by_shop.get(sid, []):
+                    if sid in dynamic_goods and gid not in dynamic_goods[sid]:
+                        continue
                     if sid == 15 and gid >= 15010000:
                         continue
                     if gid not in seen_gids:
@@ -509,6 +545,7 @@ class ShopService:
             }}
 
         base_list = self._get_shop_base_template()
+        dynamic_goods = self._get_dynamic_goods_ids()
         target_shop = None
         for s in base_list:
             if int(s["shop_id"]) == sid:
@@ -520,6 +557,8 @@ class ShopService:
         if sid not in NORMAL_SHOP_IDS and self.db:
             rows = self.db.query("SELECT goods_id FROM shop_goods WHERE shop_id=?", (sid,))
             valid_db_gids = {int(r["goods_id"]) for r in (rows or [])}
+        if sid in dynamic_goods:
+            valid_db_gids = dynamic_goods[sid]
 
         goods_list = []
         seen_gids = set()
@@ -529,7 +568,9 @@ class ShopService:
                 if sid == 15 and gid >= 15010000:
                     continue
                 # 严格过滤：严禁下发未在 shop_goods 白名单中激活的抓包残留商品（防止客户端无 ShopCfg 崩溃）
-                if sid not in NORMAL_SHOP_IDS and valid_db_gids and gid not in valid_db_gids:
+                if sid in dynamic_goods and gid not in valid_db_gids:
+                    continue
+                if sid not in NORMAL_SHOP_IDS and self.db and gid not in valid_db_gids:
                     continue
                 seen_gids.add(gid)
                 # 清洗抓包脏数据：未购商品统一默认为 0，只有玩家在 store_purchase 中有记录才计入已购
@@ -543,6 +584,8 @@ class ShopService:
         if sid not in NORMAL_SHOP_IDS and self.db:
             for g in self.db.query("SELECT goods_id FROM shop_goods WHERE shop_id=? ORDER BY goods_id", (sid,)):
                 gid = int(g["goods_id"])
+                if sid in dynamic_goods and gid not in valid_db_gids:
+                    continue
                 if sid == 15 and gid >= 15010000:
                     continue
                 if gid not in seen_gids:
@@ -673,7 +716,7 @@ class ShopService:
                 continue
 
             g = self._find_goods_cfg(gid, sid)
-            if not g:
+            if not g or not goods_have_client_resources(g):
                 raise OperationError(406, f"商品 {gid} 未配置或不在货架")
 
             dj = {}

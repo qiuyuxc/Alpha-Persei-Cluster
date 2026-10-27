@@ -36,6 +36,7 @@ from flask import Response
 
 from logger import log as _logger_log
 import log_sifter
+from client_platform import detect_platform
 
 _SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_STATIC_DIR = os.path.join(_SERVER_DIR, "static_resources")
@@ -126,26 +127,11 @@ FALLBACK_IPS = {
 
 
 def get_platform_from_path(path: str, headers=None) -> str:
-    """根据请求路径及请求头精准判断客户端平台（pc / ios / android）。"""
-    lower_path = path.lower()
-    if "/ios/" in lower_path:
-        return "ios"
-    if "/android/" in lower_path:
-        return "android"
-    if "/pc/" in lower_path:
-        return "pc"
-
-    if headers:
-        ua = headers.get("User-Agent", "").lower()
-        if "iphone" in ua or "ipad" in ua or "ios" in ua or "darwin" in ua:
-            return "ios"
-        if "android" in ua:
-            return "android"
-        if "windows" in ua or "pc" in ua:
-            return "pc"
-
-    # 默认 PC 平台
-    return "pc"
+    """Resource paths select the cache independently of other clients."""
+    platform = detect_platform(headers=headers, path=path)
+    if platform is None:
+        raise ValueError("资源请求缺少可识别的平台路径或请求头")
+    return platform
 
 
 def get_data_dir(platform: str = "pc") -> str:
@@ -161,33 +147,39 @@ def get_data_dir(platform: str = "pc") -> str:
         return fallback_dir
 
 
+SHARED_STATIC_FILES = frozenset({"geetest.html", "notice_cfg.json", "sdk_config.json", "sdk_agreement.json"})
+
+
+def _root_file_matches_platform(filename, platform):
+    if filename in SHARED_STATIC_FILES:
+        return True
+    if filename.lower().startswith("assethash_"):
+        import res_version_manager
+        return any(config.get("assethash", {}).get(platform) == filename
+                   for config in res_version_manager.get_all_version_configs())
+    return False
+
+
 def sync_initial_manifests():
-    """初始化时将已有的关键资源清单同步至 PC、iOS、Android 对应专属目录。"""
-    try:
-        os.makedirs(DEFAULT_STATIC_DIR, exist_ok=True)
-        for plat, target_dir in PLATFORM_DIRS.items():
-            try:
-                os.makedirs(target_dir, exist_ok=True)
-            except Exception:
-                continue
-
-            if os.path.isdir(DEFAULT_STATIC_DIR):
-                for f in os.listdir(DEFAULT_STATIC_DIR):
-                    s_p = os.path.join(DEFAULT_STATIC_DIR, f)
-                    if not os.path.isfile(s_p):
+    """Copy platform directories first; shared roots never supply unknown bundles."""
+    os.makedirs(DEFAULT_STATIC_DIR, exist_ok=True)
+    for platform, target in PLATFORM_DIRS.items():
+        try:
+            os.makedirs(target, exist_ok=True)
+            for source_dir in (os.path.join(DEFAULT_STATIC_DIR, platform), DEFAULT_STATIC_DIR):
+                if not os.path.isdir(source_dir):
+                    continue
+                for filename in os.listdir(source_dir):
+                    source = os.path.join(source_dir, filename)
+                    if not os.path.isfile(source):
                         continue
-
-                    # 针对 iOS / PC 特异性清单分流复制
-                    if "29e8f745e8ec6032937a65a0bfd3a9cf" in f and plat != "ios":
+                    if source_dir == DEFAULT_STATIC_DIR and not _root_file_matches_platform(filename, platform):
                         continue
-                    if "3807d27e1a6e26853f1fccfa8b7681d0" in f and plat not in ("pc", "android"):
-                        continue
-
-                    d_p = os.path.join(target_dir, f)
-                    if not os.path.exists(d_p):
-                        shutil.copy2(s_p, d_p)
-    except Exception:
-        pass
+                    destination = os.path.join(target, filename)
+                    if not os.path.exists(destination):
+                        shutil.copy2(source, destination)
+        except OSError as error:
+            _logger_log(f"CDN {platform} 清单初始化失败: {error}", "WARN", module="CDN")
 
 
 def is_capture_enabled():
@@ -330,7 +322,7 @@ def find_cached_file(filename: str, platform: str = "pc"):
     r"""在指定平台的专属存储目录与备用目录查找本地已存在的文件。
     级联多级回退检索池：
     1. static_resources/<platform>/ （优先下发标准清单与平台特化配置）
-    2. static_resources/ 根目录 (非 .ys 配置文件)
+    2. static_resources/ 根目录 (公共页面或已登记到该平台的清单)
     3. 平台当前专属主数据目录 (get_data_dir，默认优先指向 D:\<PLATFORM>_DATA)
     4. 历史专属盘目录 (D:\PC_DATA, D:\iOS_DATA, D:\Android_DATA，严格物理分盘隔离)
     5. 本地相对缓存目录 server/cdn_cache/<platform>
@@ -340,7 +332,7 @@ def find_cached_file(filename: str, platform: str = "pc"):
     candidates = [
         os.path.join(DEFAULT_STATIC_DIR, plat, filename),
     ]
-    if not filename.endswith(".ys"):
+    if _root_file_matches_platform(filename, plat):
         candidates.append(os.path.join(DEFAULT_STATIC_DIR, filename))
 
     plat_dir = get_data_dir(plat)
@@ -364,7 +356,7 @@ def find_cached_file(filename: str, platform: str = "pc"):
 
     # 若仍未命中，尝试在 D:\DIFF_ASSETS_307_229_vs_311 中查找
     diff_root = r"D:\DIFF_ASSETS_307_229_vs_311"
-    if os.path.isdir(diff_root):
+    if plat == "pc" and os.path.isdir(diff_root):
         diff_cand = os.path.join(diff_root, "v229", filename)
         if os.path.isfile(diff_cand) and os.path.getsize(diff_cand) > 0:
             return diff_cand
@@ -431,7 +423,10 @@ def stream_upstream_and_cache(path, host="download-eo.ys4fun.com", query="", hea
     - 下载完成后原子重命名为正式文件
     """
     fn = os.path.basename(path.split("?")[0])
-    platform = get_platform_from_path(path, headers)
+    try:
+        platform = get_platform_from_path(path, headers)
+    except ValueError as error:
+        return Response(str(error), status=400, mimetype="text/plain")
     target_dir = get_data_dir(platform)
     final_file = os.path.join(target_dir, fn)
     part_file = os.path.join(target_dir, f"{fn}.{os.getpid()}_{time.time_ns()}.part")
@@ -633,7 +628,10 @@ def handle_resource_request(path, host="download-eo.ys4fun.com", query="", heade
     2. 若本地不存在且开启抓包器，发起零内存消耗的高性能流式双向管道，边转发边存盘到该平台专属目录。
     """
     fn = os.path.basename(path.split("?")[0])
-    platform = get_platform_from_path(path, headers)
+    try:
+        platform = get_platform_from_path(path, headers)
+    except ValueError as error:
+        return Response(str(error), status=400, mimetype="text/plain")
     range_hdr = headers.get("Range") if headers else None
 
     # 1. 查找本地缓存（优先该平台目录）

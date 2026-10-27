@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   AlertCircle,
   CheckCircle2,
@@ -40,7 +40,8 @@ import {
   type DrawRecordItem,
 } from '../lib/api'
 import expansionCatalogRaw from '../data/expansion_pools_catalog.json'
-import { GACHA_HISTORY_OFFLINE_FALLBACK } from '../data/gacha_history_fallback'
+import { DrawRuleEditor } from '../components/DrawRuleEditor'
+import type { DrawRules } from '../lib/api'
 
 // 离线静态回退目录（保障单文件离线秒开，涵盖 229 与 311 现役卡池）
 const offlineCatalog: GachaPoolEntry[] = (expansionCatalogRaw as any[]).map((item) => ({
@@ -81,7 +82,7 @@ const CATEGORIES: CategoryMeta[] = [
   {
     id: 'precision_90',
     seriesKey: 'hero_precision_90',
-    title: '90 抽必中精准池',
+    title: '必中 UP 探测池',
     subTag: '特殊精准探测',
     desc: '90 抽大保底必出当期 UP 修正者，绝不歪卡；软保底 81~89 抽阶梯平滑爬升。',
     pityCap: 90,
@@ -94,7 +95,7 @@ const CATEGORIES: CategoryMeta[] = [
   {
     id: 'precision_70',
     seriesKey: 'hero_precision_70',
-    title: '70 抽扩充探测池',
+    title: '扩充探测池',
     subTag: '扩充探测',
     desc: '70 抽小保底 50% 出 UP；若歪卡触发大保底防歪锁，下次出金 100% 必出 UP。',
     pityCap: 70,
@@ -135,7 +136,12 @@ const CATEGORIES: CategoryMeta[] = [
 export default function GachaPanel() {
   const { activeUid, isOnline, resVersionInfo } = useServer()
   const currentVersion = resVersionInfo?.current_version || '229'
-  const isVer311 = currentVersion === '311'
+  const isVer311 = Number(currentVersion) >= 311
+  const [dataReady, setDataReady] = useState(false)
+  const [rules, setRules] = useState<Record<string, DrawRules>>({})
+  const loadSequence = useRef(0)
+  const currentUid = useRef(activeUid)
+  currentUid.current = activeUid
 
   // 全链路版本守卫：判定目标卡池是否属于 Build 311 独有卡池
   const isPool311Exclusive = (p: GachaPoolEntry) => {
@@ -144,7 +150,7 @@ export default function GachaPanel() {
 
   // 判定当前运行环境下是否受版本锁定禁止开启
   const isPoolLocked = (p: GachaPoolEntry) => {
-    return !isVer311 && isPool311Exclusive(p)
+    return p.is_version_locked ?? (!isVer311 && isPool311Exclusive(p))
   }
 
   // 选中的四大卡池类型之一 (支持 localStorage 持久化记忆，杜绝刷新后分类重置导致视觉上卡池假关闭)
@@ -175,7 +181,7 @@ export default function GachaPanel() {
   }
 
   // 全量卡池列表（包含在架与未在架）
-  const [pools, setPools] = useState<GachaPoolEntry[]>(offlineCatalog)
+  const [pools, setPools] = useState<GachaPoolEntry[]>(offlineCatalog.map(pool => ({ ...pool, enabled: false, active: false })))
   const [loading, setLoading] = useState(false)
   const [presetLoading, setPresetLoading] = useState(false)
   const [operatingPid, setOperatingPid] = useState<number | null>(null)
@@ -183,14 +189,14 @@ export default function GachaPanel() {
 
   // 四大保底系列真实计数状态
   const [pityStates, setPityStates] = useState<Record<string, PityGroupState>>({
-    hero_precision_90: { pool_group: 'hero_precision_90', since_ssr: 12, since_sr: 3, total_draws: 82, is_up_guaranteed: 0, pity_cap: 90 },
-    hero_precision_70: { pool_group: 'hero_precision_70', since_ssr: 45, since_sr: 6, total_draws: 185, is_up_guaranteed: 1, pity_cap: 70 },
-    hero_standard_70: { pool_group: 'hero_standard_70', since_ssr: 28, since_sr: 2, total_draws: 128, is_up_guaranteed: 0, pity_cap: 70 },
-    weapon_servant_70: { pool_group: 'weapon_servant_70', since_ssr: 0, since_sr: 0, total_draws: 40, is_up_guaranteed: 0, pity_cap: 70 },
+    hero_precision_90: { pool_group: 'hero_precision_90', since_ssr: 0, since_sr: 0, total_draws: 0, is_up_guaranteed: 0, pity_cap: 90 },
+    hero_precision_70: { pool_group: 'hero_precision_70', since_ssr: 0, since_sr: 0, total_draws: 0, is_up_guaranteed: 0, pity_cap: 70 },
+    hero_standard_70: { pool_group: 'hero_standard_70', since_ssr: 0, since_sr: 0, total_draws: 0, is_up_guaranteed: 0, pity_cap: 70 },
+    weapon_servant_70: { pool_group: 'weapon_servant_70', since_ssr: 0, since_sr: 0, total_draws: 0, is_up_guaranteed: 0, pity_cap: 70 },
   })
 
   // 抽卡历史记录（以 pool_group 分组，预置离线真实数据）
-  const [historyByGroup, setHistoryByGroup] = useState<Record<string, DrawRecordItem[]>>(GACHA_HISTORY_OFFLINE_FALLBACK)
+  const [historyByGroup, setHistoryByGroup] = useState<Record<string, DrawRecordItem[]>>({})
 
   // 垫抽微调输入框数值与防歪状态
   const [tuningPity, setTuningPity] = useState<number>(45)
@@ -205,8 +211,13 @@ export default function GachaPanel() {
 
   // 当前分类元信息
   const curCatMeta = useMemo(() => {
-    return CATEGORIES.find((c) => c.id === selectedCat) || CATEGORIES[0]
-  }, [selectedCat])
+    const base = CATEGORIES.find((c) => c.id === selectedCat) || CATEGORIES[0]
+    const rule = rules[base.seriesKey]
+    if (!rule) return base
+    return { ...base, pityCap: rule.hard_pity, softPityStart: rule.soft_pity_start,
+      softPityEnd: rule.hard_pity - 1,
+      desc: `当前规则：S 基础概率 ${(rule.ssr_rate * 100).toFixed(2)}%，第 ${rule.soft_pity_start} 抽开始提升，${rule.hard_pity} 抽硬保底。` }
+  }, [selectedCat, rules])
 
   // 当前分类对应的保底状态
   const curPityState = useMemo(() => {
@@ -253,50 +264,46 @@ export default function GachaPanel() {
 
   // 加载服务端卡池与保底及历史信息
   const loadGachaData = async () => {
+    const uid = activeUid
+    if (uid !== currentUid.current) return
+    const sequence = ++loadSequence.current
+    setDataReady(false)
     if (!isOnline) {
-      setPools(offlineCatalog)
+      setPools(offlineCatalog.map(pool => ({ ...pool, enabled: false, active: false })))
+      setHistoryByGroup({})
       return
     }
     setLoading(true)
     try {
-      const res = await fetchGachaPools(activeUid)
-      if (res.data) {
-        if (res.data.pools && res.data.pools.length > 0) {
-          setPools(res.data.pools)
-        }
-        if (res.data.pity_states) {
-          setPityStates((prev) => ({
-            ...prev,
-            ...res.data.pity_states,
-          }))
-        }
-        if (res.data.history_by_group) {
-          const incoming = res.data.history_by_group
-          setHistoryByGroup((prev) => {
-            const next = { ...prev }
-            for (const [k, v] of Object.entries(incoming)) {
-              if (Array.isArray(v)) {
-                next[k] = v
-              }
-            }
-            return next
-          })
-        }
+      const res = await fetchGachaPools(uid)
+      if (sequence !== loadSequence.current || uid !== currentUid.current) return
+      if (res.code !== 0 || !res.data) throw new Error(res.msg || '读取失败')
+      setPools(res.data.pools || [])
+      if (res.data.pity_states) setPityStates(res.data.pity_states)
+      setHistoryByGroup(Object.fromEntries(Object.entries(res.data.history_by_group || {}).filter(([, records]) => Array.isArray(records))) as Record<string, DrawRecordItem[]>)
+      setRules(res.data.rules || {})
+      setDataReady(true)
+    } catch (error) {
+      if (sequence === loadSequence.current && uid === currentUid.current) {
+        setHistoryByGroup({}); setPools([])
+        showToast('error', error instanceof Error ? error.message : '卡池读取失败')
       }
-    } catch (err) {
-      console.warn('[Gacha] 获取卡池信息失败:', err)
-      setPools((prev) => (prev && prev.length > 0 ? prev : offlineCatalog))
-    } finally {
-      setLoading(false)
-    }
+    } finally { if (sequence === loadSequence.current) setLoading(false) }
   }
 
   useEffect(() => {
+    setDataReady(false); setHistoryByGroup({})
+    setPityStates(Object.fromEntries(CATEGORIES.map(category => [category.seriesKey, {
+      pool_group: category.seriesKey, since_ssr: 0, since_sr: 0, total_draws: 0,
+      is_up_guaranteed: 0, pity_cap: category.pityCap,
+    }])))
     loadGachaData()
+    return () => { loadSequence.current++ }
   }, [activeUid, isOnline])
 
   // 切换在架卡池状态
   const handleTogglePool = async (poolId: number, targetEnabled: boolean) => {
+    if (!isOnline || !dataReady) { showToast('error', '请先读取当前玩家的真实卡池数据'); return }
     // 全链路版本守卫：若当前为 229 模式，禁止启用 311 独有卡池
     if (targetEnabled) {
       const curPool = pools.find((p) => p.id === poolId)
@@ -332,7 +339,7 @@ export default function GachaPanel() {
     try {
       const res = await toggleGachaPool(poolId, targetEnabled)
       if (res.code === 0) {
-        showToast('success', `卡池 #${poolId} 已${targetEnabled ? '成功上架' : '已下架'}并同步活动`)
+        showToast('success', `卡池 #${poolId} 已${targetEnabled ? '上架' : '下架'}，重新进入游戏刷新卡池`)
       } else {
         showToast('error', res.msg || '切换卡池状态失败')
         await loadGachaData()
@@ -347,6 +354,7 @@ export default function GachaPanel() {
 
   // 保存垫抽数与防歪锁
   const handleSavePity = async () => {
+    if (!isOnline || !dataReady) { showToast('error', '请先读取当前玩家的真实卡池数据'); return }
     setSavingPity(true)
     try {
       const targetCount = Math.max(0, Math.min(curCatMeta.pityCap, Number(tuningPity) || 0))
@@ -378,6 +386,7 @@ export default function GachaPanel() {
 
   // 应用卡池预设模板
   const handleApplyPreset = async (presetKey: string) => {
+    if (!isOnline || !dataReady) { showToast('error', '请先读取当前玩家的真实卡池数据'); return }
     if (!isVer311 && presetKey === 'theme44_pioneer') {
       showToast('warning', '当前处于 Build 229 兼容基线模式，禁止应用 Build 311 专属先锋卡池预设！请先在版本管理中切换至 Build 311。')
       return
@@ -489,6 +498,10 @@ export default function GachaPanel() {
           </div>
         }
       />
+      <DrawRuleEditor key={curCatMeta.seriesKey} group={curCatMeta.seriesKey} enabled={isOnline}
+        onSaved={() => { void loadGachaData() }} />
+      {!dataReady && <p className="text-sm text-warning">尚未读取当前玩家的真实卡池记录，玩家状态操作暂不可用。</p>}
+
 
       {/* 飘字提示 */}
       {toastMsg && (

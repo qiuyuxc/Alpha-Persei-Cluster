@@ -1448,8 +1448,11 @@ def _settle_frames(ctx, uid, bid, result, dest, times=1, heroes=None, sweep=Fals
             # 怪物击杀广播
             m_type = 2 if (is_boss_normal or is_boss_advance or (3010101 <= dest_int <= 3012399)) else 0
             m_id = 5024 if m_type == 2 else 0
-            if dest_int > 0:
-                bus.emit(Events.MONSTER_KILL, ctx, uid, monster_id=m_id or 101, count=1*times, race=7, monster_type=m_type)
+            if dest_int > 0 and m_id:
+                # Do not invent monster 101 for stages without a known monster
+                # identity. It is absent from MonsterCfg and breaks collection
+                # updates during settlement and on the next login.
+                bus.emit(Events.MONSTER_KILL, ctx, uid, monster_id=m_id, count=1*times, race=7, monster_type=m_type)
         except Exception:
             pass
 
@@ -3774,6 +3777,9 @@ def _template_response(req, ctx):
     if t.get("reply") == "no":
         return CSResponse(reply=False)
     tmpl = t.get("template") or {}
+    from fresh_profile import is_fresh, fallback_payload as fresh_fallback
+    if ctx.db and is_fresh(ctx.db, req.uid):
+        return CSResponse([DownFrame(sc, fresh_fallback(ctx.db, req.uid, sc))])
     # 模板值 + schema 补齐：模板往往只给了部分字段，缺的 required 单数 message
     # 会让客户端取到 nil（见 fallback_payload 注释）
     payload = fallback_payload(sc, tmpl)
@@ -3859,6 +3865,9 @@ def handle_request(req, ctx=None):
                         tmpl_vals = t["template"]
                 payload = fallback_payload(sc, tmpl_vals)
             frames.append(DownFrame(sc, payload, flag=int(f.get("flag", 0)), srv=f.get("srv")))
+        from fresh_profile import is_fresh, fallback_payload as fresh_fallback
+        if ctx.db and is_fresh(ctx.db, req.uid):
+            frames = [DownFrame(f.cmd, fresh_fallback(ctx.db, req.uid, f.cmd), flag=f.flag, srv=f.srv) for f in frames]
         return CSResponse(frames, src="skeleton")
     # 3. TEMPLATE：835 对模板库（无库数据时兜底）
     tr = _template_response(req, ctx)

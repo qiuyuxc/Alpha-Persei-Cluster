@@ -392,12 +392,15 @@ def main(argv=None):
     # 装配全局时间与周期事件订阅器
     import timer_listeners
     timer_listeners.register_timer_listeners()
+    scheduler = None
 
     # 注册进程优雅退出信号捕获
     import signal
     import event_bus
     def _on_signal_exit(signum, frame):
         log(f"收到进程退出信号 ({signum})，广播 SERVER_SHUTDOWN...", module="MAIN")
+        if scheduler is not None:
+            scheduler.stop()
         try:
             event_bus.bus.emit(event_bus.Events.SERVER_SHUTDOWN, ctx=core, uid=None, shutdown_ts=int(time.time()))
         except Exception:
@@ -483,6 +486,9 @@ def main(argv=None):
 
     # 启动 HTTPS（SDK 层 + HTTP:80 辅助 + 官方 CDN 抓包拦截）
     app = server_net.build_https_app(core, material, args.game_port, args.gw_port, host_ip=host_ip)
+    import runtime_scheduler
+    scheduler = runtime_scheduler.start(db)
+    log('周期与等级邮件后台检查已启动，每 30 秒检查并重试未完成投递', module='MAIN')
     https_thread = threading.Thread(
         target=server_net.start_https, args=(app, args.https_port), daemon=True)
     https_thread.start()

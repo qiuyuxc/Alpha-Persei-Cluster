@@ -17,6 +17,7 @@ import time
 from account_db import get_db, DEFAULT_DB  # noqa: E402
 from codec import encode, decode  # noqa: E402
 from enchant_slots_util import normalize_enchant_slots
+from fresh_profile import is_fresh
 
 DEFAULT_UID = 2174928301  # 业务 UID（掩码随机 UID）
 
@@ -202,11 +203,14 @@ def gen_28001(pkt, db, uid):
     db.check_and_refresh_periodic_tasks(uid)
     from task_listener import sync_cleared_stage_tasks
     sync_cleared_stage_tasks(db, uid)
+    from fresh_profile import advance_tasks, ensure_resident_tasks
+    ensure_resident_tasks(db, uid)
+    advance_tasks(db, uid)
     tasks = db.query(
         "SELECT task_id, progress, complete_flag, expired_ts FROM task WHERE uid=?",
         (uid,)
     )
-    if not tasks:
+    if not tasks and not is_fresh(db, uid):
         cfgs = db.query("SELECT task_id, name, task_type FROM task_cfg")
         for c in cfgs:
             tid, name, ttype = c["task_id"], c["name"], c["task_type"]
@@ -241,11 +245,13 @@ def gen_28001(pkt, db, uid):
             "expired_timestamp": int(t.get("expired_ts") or 0)
         })
 
+    from fresh_profile import task_phases
+    phases = task_phases(db, uid, tasks) if is_fresh(db, uid) else {3: 19, 4: 1}
     return encode("sc_28001", {
         "assignment_list": assignment_list,
         "send_type": 0,
-        "newbie_phase": 19,
-        "assignment_phase": 1
+        "newbie_phase": phases[3],
+        "assignment_phase": phases[4]
     })
 
 
@@ -423,6 +429,7 @@ _SIGN_DAILY = 3
 _SIGN_MONTHCARD = 34024
 
 _SEVEN_DAY_REWARD = None
+_REPEATING_SIGN_IDS = None
 
 def seven_day_reward(activity_id, nth):
     """七日/限时签到第 nth 次的奖励：ActivityCumulativeSignCfg[id].config_list[nth-1]
@@ -433,8 +440,10 @@ def seven_day_reward(activity_id, nth):
         import json as _j7
         try:
             base = os.path.dirname(os.path.abspath(__file__))
-            cl = _j7.load(open(os.path.join(base, "activity_cumulative_sign_cfg.json"), encoding="utf-8"))
-            sc = _j7.load(open(os.path.join(base, "sign_cfg.json"), encoding="utf-8"))
+            with open(os.path.join(base, "activity_cumulative_sign_cfg.json"), encoding="utf-8") as source:
+                cl = _j7.load(source)
+            with open(os.path.join(base, "sign_cfg.json"), encoding="utf-8") as source:
+                sc = _j7.load(source)
             _SEVEN_DAY_REWARD = {int(a): [tuple(sc[str(sid)]) for sid in ids if str(sid) in sc]
                                  for a, ids in cl.items()}
         except Exception:
@@ -443,15 +452,27 @@ def seven_day_reward(activity_id, nth):
     return lst[nth - 1] if 1 <= nth <= len(lst) else None
 
 
+def seven_day_cycle_length(activity_id):
+    """Only activities marked repeated by the client reopen after completion."""
+    global _REPEATING_SIGN_IDS
+    if _REPEATING_SIGN_IDS is None:
+        import json as _j7
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'activity_cumulative_sign_repeat.json')
+        with open(path, encoding='utf-8') as source:
+            _REPEATING_SIGN_IDS = set(_j7.load(source))
+    aid = int(activity_id)
+    if aid not in _REPEATING_SIGN_IDS:
+        return 0
+    seven_day_reward(aid, 1)
+    return len(_SEVEN_DAY_REWARD.get(aid) or [])
+
+
 def gen_11015(activity_id, uid=DEFAULT_UID, db=None):
     """生成指定七日签到活动的 sc_11015 状态帧。"""
     db = db or get_db()
-    rows = db.query("SELECT sign_count, last_sign_ts FROM sign WHERE uid=? AND activity_id=?",
-                    (uid, int(activity_id)))
-    cnt = rows[0]["sign_count"] if rows else 0
-    last = rows[0]["last_sign_ts"] if rows else 0
-    return encode("sc_11015", {"activity_id": int(activity_id), "sign_count": cnt,
-                               "last_sign_time": last})
+    state = _sign_state(db, uid, int(activity_id))
+    return encode("sc_11015", {"activity_id": int(activity_id), "sign_count": state['sign_count'],
+                               "last_sign_time": state.get('last_sign_ts', 0)})
 
 
 def get_game_time(ts=None):
@@ -482,22 +503,28 @@ def _sign_state(db, uid, activity_id):
     两类语义（按 05:00:00 业务日界线计算）：
     - 日历签（activity 3 每日 / 34024 月卡）：累计机制（老大定稿），不要求连续、
       不绑定日期，第 N 次签到 → 奖励表第 N 项；跨月（业务月）重置 sign_list/sign_count。
-    - 七日/限时签到（4300101 等）：种子行 year/month 为 NULL，按 last_sign_ts 判当日（>=当日5:00），
-      count 永不归零。
+    - 七日/限时签到：按 last_sign_ts 判当日；repeated 活动领满后于下一业务日开启新轮，
+      未领满的进度保留，非循环活动的完成记录保留。
     """
     import json as _j
     now = get_game_time()
     rows = db.query("SELECT * FROM sign WHERE uid=? AND activity_id=?", (uid, activity_id))
     row = rows[0] if rows else None
 
-    # 七日/限时签到（非日历活动）：一律按 last_sign_ts 判当日，count 只增不减。
+    # Viewing a completed repeating activity derives the next cycle without
+    # writing the save. The first claim persists its new count and timestamp.
     if activity_id not in (_SIGN_DAILY, _SIGN_MONTHCARD):
         ts = int(row.get("last_sign_ts") or 0) if row else 0
         a = get_game_time(ts) if ts else None
-        signed = bool(a and (a.tm_year, a.tm_mon, a.tm_mday) == (now.tm_year, now.tm_mon, now.tm_mday))
+        today = (now.tm_year, now.tm_mon, now.tm_mday)
+        previous = (a.tm_year, a.tm_mon, a.tm_mday) if a else None
+        signed = previous == today
+        count = int(row.get("sign_count") or 0) if row else 0
+        cycle = seven_day_cycle_length(activity_id)
+        if cycle and count >= cycle and (previous is None or previous < today):
+            count, ts = 0, 0
         return {"year": now.tm_year, "month": now.tm_mon, "day": now.tm_mday,
-                "sign_list": [], "sign_count": int(row.get("sign_count") or 0) if row else 0,
-                "signed_today": signed}
+                "sign_list": [], "sign_count": count, "last_sign_ts": ts, "signed_today": signed}
 
     if row and row.get("year") == now.tm_year and row.get("month") == now.tm_mon:
         try:
@@ -534,6 +561,17 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
     """仅编码 payload（不带帧头）——供 10200 进服响应段帧替换用。
     返回 bytes 或 None。支持：17009 材料 / 15009 货币 / 23009 玩家 / 14009 英雄 / 16015 动态卡池。"""
     db = db or get_db()
+    if cmd in (27005, 27007, 27023, 31001, 31979, 33001):
+        from social_protocol import login_payload
+        return login_payload(db, uid, cmd)
+    if is_fresh(db, uid):
+        if cmd == 12009:
+            return encode("sc_12009", {"user_level": db.get("users", uid)["level"]})
+        if cmd == 12111:
+            return encode("sc_12111", {"mod_guide_list": [r["guide_id"] for r in db.query("SELECT guide_id FROM guide WHERE uid=? AND kind IN ('weak','both')", (uid,))]})
+        if cmd == 12089:
+            row = db.get("game_user", uid)
+            return encode("sc_12089", {k: row.get(k, 0) for k in ("is_first_draw", "is_first_draw_limited", "is_first_draw_lucky", "total_buy_fatigue_times")})
     if cmd == 16015:
         from draw_service import DrawService
         svc = DrawService.get_instance(db=db)
@@ -843,16 +881,10 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
                                    "uid_sign": "f52a9206f87a10eaa6caa54146a90db9"})
     if cmd == 11015:
         # 七日签到状态（登录推）：根据当前客户端版本动态自适应下发
-        import time as _t
         import res_version_manager
         version_cfg = res_version_manager.get_version_config(kw.get("res_version"))
         act_id = int(version_cfg["sign_activity_id"])
-        now_ts = int(_t.time())
-        return encode("sc_11015", {
-            "activity_id": act_id,
-            "sign_count": 7,
-            "last_sign_time": now_ts
-        })
+        return gen_11015(act_id, uid=uid, db=db)
     if cmd == 12045:
         # 每日免费体力甜点（百宝囊上下午领蛋，登录推，seq=144）
         import time as _t
@@ -863,7 +895,7 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         return encode("sc_12045", {"daily_fatigue_dessert_list": desserts})
     if cmd == 88305:
         from rogueteam_service import RogueTeamService
-        svc = RogueTeamService.get()
+        svc = RogueTeamService.get(db=db)
         out = svc.get_outside_data(uid)
         return encode("sc_88305", {
             "template_id": out["template_id"],
@@ -879,7 +911,7 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         })
     if cmd == 88309:
         from rogueteam_service import RogueTeamService
-        svc = RogueTeamService.get()
+        svc = RogueTeamService.get(db=db)
         out = svc.get_outside_data(uid)
         return encode("sc_88309", {
             "template_id": out["template_id"],
@@ -888,7 +920,7 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         })
     if cmd == 88315:
         from rogueteam_service import RogueTeamService
-        svc = RogueTeamService.get()
+        svc = RogueTeamService.get(db=db)
         out = svc.get_outside_data(uid)
         return encode("sc_88315", {
             "activity_id": out["activity_id"],
@@ -897,7 +929,7 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         })
     if cmd == 88001:
         from rogueteam_service import RogueTeamService
-        svc = RogueTeamService.get()
+        svc = RogueTeamService.get(db=db)
         s = svc.get_session_data(uid)
         if s and s.get("in_game", 0) != 0:
             return encode("sc_88001", s)
@@ -924,6 +956,9 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         mc = db.query("SELECT monthly_card_timestamp, is_sign FROM month_card WHERE uid=?", (uid,))
         # monthly_card_timestamp 可能为 NULL —— 直接和 now_ts 比较会 TypeError
         _dead = (mc[0]["monthly_card_timestamp"] or 0) if mc else 0
+        if is_fresh(db, uid):
+            return encode("sc_34023", {"monthly_card_num": int(_dead > now_ts),
+                "monthly_card_timestamp": _dead, "is_sign": int(st["signed_today"])})
         dead_ts = _dead if _dead > now_ts else now_ts + 30 * 86400
         is_s = 1 if st["signed_today"] else 0   # 以 signed_today 为准（含 update_ts 当日判定）
         return encode("sc_34023", {"monthly_card_num": 1, "monthly_card_timestamp": dead_ts,
@@ -1027,11 +1062,10 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         except Exception:
             rec_info = []
         start_ts = int(b.get("start_timestamp") or (now_ts - 7 * 86400))
-        # 活动类时间不再沿用 DB 中会过期的赛季时间。
-        end_ts = res_version_manager.FAR_FUTURE_TIMESTAMP
+        end_ts = int(b.get('end_timestamp') or (now_ts + 42 * 86400))
         refresh_ts = int(b.get("next_refresh_timestamp") or 0)
         if refresh_ts <= now_ts:
-            refresh_ts = get_weekly_mon_5am_ts(now_ts) + 7 * 86400
+            refresh_ts = min(end_ts, get_weekly_mon_5am_ts(now_ts) + 7 * 86400)
         return encode("sc_34031", {
             "battlepass_list_id": expected_bp_id,
             "pay_level": int(b["pay_level"]) if b.get("pay_level") is not None else 0,
@@ -1257,6 +1291,9 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         }
 
         act_rows = db.query("SELECT activity_id, start_time, stop_time, state, theme, template, sub_activity_id_list FROM activity WHERE uid=?", (uid,))
+        if is_fresh(db, uid):
+            from fresh_profile import activity_definitions
+            act_rows = activity_definitions(db, act_rows)
         act_list = []
         seen_acts = set()
         for r in (act_rows or []):
@@ -1400,6 +1437,22 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
                     "sub_activity_id_list": []
                 })
 
+        # 公会联合攻坚：周一 05:00 征兆、周六 05:00 开放、下周一换周。
+        import guild_cycle
+        act_list = guild_cycle.apply_windows(act_list)
+        # 在架卡池使用当前轮换窗口；活动拓扑与版本守卫保持原有规则。
+        for entry in act_list:
+            current_pool = pool_act_map.get(entry['activity_id'])
+            if current_pool is not None:
+                entry['start_time'] = int(current_pool['start_time'])
+                entry['stop_time'] = int(current_pool['stop_time'])
+        # 多维变量 (template 73) 使用后台配置的周期窗口，不再落到远期兜底时间。
+        import game_cycles
+        poly_start, poly_stop = game_cycles.polyhedron_window(db)
+        for entry in act_list:
+            if entry['template'] == 73:
+                entry['start_time'] = poly_start
+                entry['stop_time'] = poly_stop
         return encode("sc_11001", {"activity_list": act_list})
     if cmd == 24009:
         # 章节与剧情进度（StageService 统管驱动 → sc_24009 user_chapter_list）
@@ -1521,17 +1574,15 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
             "insure_list": [{"difficulty": d, "insure_times": insure_map[d]} for d in range(1, 6)]
         })
     if cmd == 10600:
-        # [Fix by Gemini 3.7-flash] open_system 全量下发（封锁公会体系 2401/2402/2404/2405/2406，保留通行证 1901/1902/1903/1904/1905/519，其余系统正常开放）
+        # 全量开放已支持的系统，包括公会、任务与首领支援。
         _sys_ids = [20, 101, 201, 203, 204, 205, 206, 207, 208, 209, 210, 211, 221, 231, 235, 301, 302, 303, 304, 305, 306, 307, 308, 309, 311, 312, 313, 314, 316, 330, 331, 332, 333, 334, 335, 336, 337, 341, 342, 343, 344, 345, 346, 401, 501, 510, 511, 512, 513, 519, 601, 701, 702, 703, 801, 802, 803, 804, 901, 902, 904, 905, 1001, 1101, 1201, 1301, 1401, 1501, 1601, 1701, 1702, 1802, 1803, 1901, 1902, 1903, 1904, 1905, 2001, 2101, 2201, 2301, 2302, 2501, 2510, 2511, 2512, 2513, 2514, 2515, 2601, 2701, 2801, 2901, 3001, 3101, 3110, 3120, 9901, 9902, 9903, 9904, 9905, 9907, 9908, 9909, 9910, 9911, 9912, 10101, 10102, 10301, 10401, 10501, 10601, 10701, 10702, 10703, 10704, 11102, 20001, 20002]
+        _sys_ids = sorted(set(_sys_ids) | {2401, 2402, 2404, 2405, 2406})
         return encode("sc_10600", {"open_system": _sys_ids})
     if cmd == 67001:
         # [AdminCatExplore] 管理员猫咪探索主数据动态下发（sc_67001）
         from admin_cat_explore_service import AdminCatExploreService
         payload_dict = AdminCatExploreService.get_instance().generate_sc_67001_dict(db, uid)
         return encode("sc_67001", payload_dict)
-    if cmd == 31001:
-        # [Fix by Gemini 3.7-flash] 公会数据帧（公会系统关闭状态下下发空公会数据）
-        return encode("sc_31001", {"last_share_timestamp": 0})
     if cmd == 56001:
         # 红点状态库驱动 → sc_56001：nothing=0 + red_dot(待展示白名单) + client_finished_red_dot(已处理 key)
         finished = db.get_red_dot_finished(uid)
@@ -1603,7 +1654,8 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         collect_list = MailService.get_instance(db).get_collect_list(uid)
         return encode("sc_30021", {"collect_mail_list": collect_list, "collect_total_num": len(collect_list)})
     if cmd == 28001:
-
+        from game_cycles import sync_tasks
+        sync_tasks(db, uid)
         # 任务列表库驱动 → sc_28001 assignment_list（task 表 831 行 1:1 映射）
         # phase 动态化（tasktools.lua: phase 给小会卡剧情/新手引导）：
         #   newbie_phase     = max(AssignmentCfg[玩家PLOT任务].phase)  —— 客户端 TaskUpdatePlotPhase 同式
@@ -1635,11 +1687,11 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         return encode("sc_12001", {"story_list": s_list})
     if cmd == 12011:
         # 新手引导跳过列表库驱动 → sc_12011 mod_guide_list (guide 表)
-        rows = db.query("SELECT guide_id FROM guide WHERE uid=? ORDER BY guide_id", (uid,))
+        rows = db.query("SELECT guide_id FROM guide WHERE uid=? AND COALESCE(kind,'main') != 'weak' ORDER BY guide_id", (uid,))
         g_list = [int(r["guide_id"]) for r in rows] if rows else []
         # 确保 501-526 引导全覆盖（防止引导卡死）
         g_set = set(g_list)
-        for gid in range(501, 527):
+        for gid in ([] if is_fresh(db, uid) else range(501, 527)):
             if gid not in g_set:
                 g_list.append(gid)
         return encode("sc_12011", {"mod_guide_list": g_list})
@@ -1684,7 +1736,7 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
                 ids = _j21.loads(row[0]["id_list"]) if isinstance(row[0]["id_list"], str) else row[0]["id_list"]
             except Exception:
                 ids = []
-        if not ids:
+        if not ids and not is_fresh(db, uid):
             ids = [2109401, 2109403, 2109402]
         return encode("sc_52021", {"id_list": [int(x) for x in ids]})
     if cmd == 52025:
@@ -1705,7 +1757,7 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
     if cmd == 52001:
         # 图鉴系统全量库驱动 → sc_52001（illustrated 表全分类驱动，登录自动自愈对齐）
         import json as _j51
-        from illustrated_listener import IllustratedSyncService
+        from illustrated_listener import IllustratedSyncService, is_known_monster
 
         # 1. 登录时执行全量图鉴自愈校准
         IllustratedSyncService.sync_all_from_db(db, uid)
@@ -1727,7 +1779,8 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
 
         return encode("sc_52001", {
             "intelligence_reward": [],
-            "enemy_info": [{"id": r["item_id"], "times": r["times"] or 0, "is_view": r["is_view"] or 0} for r in enemies] if enemies else [],
+            "enemy_info": [{"id": r["item_id"], "times": r["times"] or 0, "is_view": r["is_view"] or 0}
+                           for r in enemies if is_known_monster(r["item_id"])],
             "servant_info": [{"id": r["item_id"], "is_view": r["is_view"] or 0} for r in servants] if servants else [],
             "equip_info": [{"suit": r["item_id"], "pos_list": _pos_list(r.get("pos_list_json")), "is_view": r["is_view"] or 0} for r in equips] if equips else [],
             "plot_info": [{"id": r["item_id"], "is_view": r["is_view"] or 0} for r in plots] if plots else [],

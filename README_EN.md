@@ -1,5 +1,12 @@
 # Alpha Persei Cluster
 
+## Source in this fork
+
+The server is in `v5_server/`, the desktop launcher in `LocalServer/`, and the Android LSPosed module in [`lsposed-dns-module/`](lsposed-dns-module/README.md). The module defaults to `127.0.0.1`; save your server IPv4 address in the module settings to configure both DNS redirection and the GM page without rebuilding.
+
+This fork includes separate accounts and saves, GM management, recurring activities and mail, social bots, and weekly guild phases. Build the main and mobile GM pages with `npm run build` and `npm run build:sub`. Player databases, credentials, signing keys, logs, local work notes, and complete game resources are excluded. Supply the base database, client resources, and server certificates before running. The upstream project and release documentation follows below.
+
+
 > This project is maintained by one person. Recent commitments may slow down bug investigation and fixes; thank you for your patience and understanding.
 
 > **Troubleshooting**: Start with the [issue index and scan reports](https://github.com/Mint-ARK/Alpha-Persei-Cluster/blob/codex/diagnostic-reports-20261020/reports/README.md). Find the relevant feature and symptom, then use the report's initial diagnosis, files, and protocol entry points to investigate, or share it with an agent for help. When opening an Issue, include your client platform, version, reproduction steps, relevant logs, and the matching A-number if available.
@@ -38,7 +45,7 @@ Back up your database, extract to a separate directory, and stop the previous se
 | --- | --- | --- |
 | **PC** | **All three: 229 / 311 / 321** | Resource manifests are configured for all three builds. |
 | **iOS** | **229 / 321; 311 is invalid** | **Build 229 supports the in-app purchase experience**. The maintainer missed capturing the iOS311 resource package, so its corresponding manifests are unavailable. |
-| **Android and other unlisted platforms** | **Manual configuration required** | Due to limited access to devices and testing environments, the corresponding internal asset manifests have not been configured. Users must configure and import them themselves. |
+| **Android** | **321 included; import 229 / 311 separately** | The module accepts a custom server address. Missing Android manifests produce an explicit error instead of using PC assets. |
 
 
 ---

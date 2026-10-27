@@ -229,10 +229,19 @@ def trigger_story_unlock(db, uid, story_id):
     return new_plots, new_pics
 
 
+def is_known_monster(monster_id):
+    """Only MonsterCfg identities are safe in sc_52001/sc_52009.
+
+    IllustratedAction directly reads MonsterCfg[id].race. Encounter placeholders
+    such as 101 are not monster identities and abort the client's event loop.
+    """
+    return str(monster_id) in _get_illu_meta().get("monsters", {})
+
+
 def trigger_monster_kill(db, uid, monster_id, times=1):
     """视骸击杀记录与增量推送"""
     mid_int = int(monster_id)
-    if not mid_int:
+    if not is_known_monster(mid_int):
         return None
 
     row = db.query("SELECT times, is_view FROM illustrated WHERE uid=? AND kind='enemy' AND item_id=?", (uid, mid_int))

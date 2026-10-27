@@ -111,6 +111,12 @@ EXPLORE_EVENT_CFG = {
 # 每周探索天数对应的大奖倍率
 WEEKLY_RATE_MAP = [0, 1, 2, 3, 4, 6, 8, 10]
 
+# ExploringEventCfg (client build 321): addresses are type 1, narrative
+# contents are types 2/3. IDs 225..300 do not exist; randint(201, 306)
+# generated those IDs and crashed AdminCatExploreEventView at settlement.
+EXPLORING_ADDRESS_IDS = tuple(range(101, 111))
+EXPLORING_CONTENT_IDS = tuple(range(201, 225)) + tuple(range(301, 307))
+
 
 class AdminCatExploreService:
     _instance: Optional["AdminCatExploreService"] = None
@@ -124,6 +130,18 @@ class AdminCatExploreService:
     @staticmethod
     def _resolve_db(ctx_or_db):
         return getattr(ctx_or_db, "db", ctx_or_db)
+
+    @staticmethod
+    def _client_timeline_events(events):
+        """Filter old invalid display events without changing dispatch state."""
+        if not isinstance(events, list):
+            return []
+        return [event for event in events if (
+            isinstance(event, dict) and
+            event.get("address_id") in EXPLORING_ADDRESS_IDS and
+            event.get("content_id") in EXPLORING_CONTENT_IDS and
+            type(event.get("time")) is int and 0 <= event["time"] <= 0xffffffff
+        )]
 
     # ---------- 核心等级与状态计算 ----------
 
@@ -201,6 +219,8 @@ class AdminCatExploreService:
         data = self.get_or_create_explore_data(db, uid)
         cats = db.get_admin_cat_list(uid)
         queues = db.get_admin_cat_queues(uid)
+        queues = [dict(queue, explore_event=self._client_timeline_events(queue.get("explore_event")))
+                  for queue in queues]
 
         mimir_list = []
         for c in cats:
@@ -266,8 +286,8 @@ class AdminCatExploreService:
         events = []
         cur_t = random.randint(60, 300)
         while cur_t < duration_sec - 120:
-            addr = random.randint(101, 110)
-            content = random.randint(201, 306)
+            addr = random.choice(EXPLORING_ADDRESS_IDS)
+            content = random.choice(EXPLORING_CONTENT_IDS)
             events.append({
                 "time": cur_t,
                 "address_id": addr,

@@ -117,13 +117,13 @@ function highlightMatch(text: string, query: string) {
 // 快捷追加常用调试资产
 const QUICK_PRESETS = [
   { id: 1, name: '移转之辉', count: 1000 },
-  { id: 2, name: '精准探测凭证', count: 10 },
-  { id: 3, name: '常规探测凭证', count: 10 },
-  { id: 5, name: '艾因索菲币', count: 100000 },
-  { id: 41710, name: '纯金誓约之戒', count: 1 },
-  { id: 40101, name: '特供体力药剂', count: 5 },
-  { id: 40801, name: '高级作战记录', count: 20 },
-  { id: 41301, name: '源质结晶', count: 10 },
+  { id: 38, name: '精确探测凭证', count: 10 },
+  { id: 5, name: '修正者探测凭证', count: 10 },
+  { id: 2, name: '艾因索菲币', count: 100000 },
+  { id: 41710, name: '誓约之戒', count: 1 },
+  { id: 20001, name: '冷却剂·小号', count: 5 },
+  { id: 40103, name: '高级作战记录', count: 20 },
+  { id: 41301, name: '次级权能因子', count: 10 },
 ]
 
 export default function MailPanel() {
@@ -135,6 +135,9 @@ export default function MailPanel() {
   // 1. 公文表单状态
   const [sender, setSender] = useState('隐科组总务部')
   const [title, setTitle] = useState('【隐科组】战备物资调配')
+  const [expiryMode, setExpiryMode] = useState<'days' | 'date'>('days')
+  const [validDays, setValidDays] = useState('30')
+  const [expireAt, setExpireAt] = useState('')
   const [body, setBody] = useState(
     '亲爱的管理员：\n隐科组已为您调度以下补给资产，请在有效期内查收，并用于前线作战指挥。',
   )
@@ -174,6 +177,7 @@ export default function MailPanel() {
     sender: string
     content: string
     sent_at_str: string
+    expire_time?: number
     attachments: Array<{ id: number; name?: string; number?: number }>
     statusText: string
     statusColor?: 'default' | 'accent' | 'success' | 'warning' | 'danger'
@@ -210,6 +214,7 @@ export default function MailPanel() {
       sender: row.sender || '隐科组总务部',
       content: row.content,
       sent_at_str: row.sent_at_str || (row.sent_at ? new Date(row.sent_at * 1000).toLocaleString('zh-CN') : '—'),
+      expire_time: row.expire_time,
       attachments: row.attachments || [],
       statusText: row.status || '已入库',
       statusColor: 'success',
@@ -225,9 +230,10 @@ export default function MailPanel() {
       sender: mail.sender || '隐科组总务部',
       content: mail.content,
       sent_at_str: mail.send_time ? new Date(mail.send_time * 1000).toLocaleString('zh-CN') : '—',
+      expire_time: mail.expire_time,
       attachments: mail.attachments || [],
-      statusText: mail.is_claimed ? '已领取' : (mail.attachments?.length ? '未领取' : (mail.is_read ? '已读' : '未读')),
-      statusColor: mail.is_claimed ? 'default' : (mail.attachments?.length ? 'warning' : 'default'),
+      statusText: mail.is_expired ? '已过期' : mail.is_claimed ? '已领取' : (mail.attachments?.length ? '未领取' : (mail.is_read ? '已读' : '未读')),
+      statusColor: mail.is_expired ? 'danger' : mail.is_claimed ? 'default' : (mail.attachments?.length ? 'warning' : 'default'),
       isFromAudit: false,
     })
     setIsDetailModalOpen(true)
@@ -307,7 +313,10 @@ export default function MailPanel() {
     return ''
   }, [bodyTrim])
 
-  const isFormValid = !senderError && !titleError && !bodyError
+  const expiryError = expiryMode === 'days'
+    ? (!Number.isInteger(Number(validDays)) || Number(validDays) < 1 || Number(validDays) > 3650 ? '有效天数须为 1 至 3650 的整数' : '')
+    : (!expireAt || !Number.isFinite(new Date(expireAt).getTime()) || new Date(expireAt).getTime() <= Date.now() ? '请选择未来的截止时间' : '')
+  const isFormValid = !senderError && !titleError && !bodyError && !expiryError
 
   // 附件操作方法
   const updateAttachments = (nextList: MailDraftAttachment[]) => {
@@ -588,6 +597,7 @@ export default function MailPanel() {
         sender: senderTrim,
         title: titleTrim,
         content: bodyTrim,
+        ...(expiryMode === 'days' ? { valid_days: Number(validDays) } : { expire_time: Math.floor(new Date(expireAt).getTime() / 1000) }),
         attachments: checkedAttachments.map((a) => ({
           id: a.id,
           name: a.name,
@@ -601,7 +611,7 @@ export default function MailPanel() {
         const pushNotice = pushed ? ' (已即时推送到在线客户端，红点已点亮)' : ''
         setToast({
           show: true,
-          msg: `邮件已成功投递至 UID ${activeUid}（发送 ${totalCheckedTypes} 项附件）${pushNotice}，已在审计日志中登记！`,
+          msg: `邮件已成功投递至 UID ${activeUid}（发送 ${totalCheckedTypes} 项附件）${pushNotice}。截止时间：${new Date(res.data.expire_time * 1000).toLocaleString('zh-CN')}${res.data.audit_saved === false ? '，发送记录保存失败，可在游戏收件箱查看。' : ''}`,
           tone: 'success',
         })
         // 仅移除已勾选发送的附件，保留未勾选的项
@@ -630,7 +640,7 @@ export default function MailPanel() {
     <div className="space-y-6">
       <PageHeader
         title="邮件系统"
-        description="支持正文严苛校验、正版品质槽位附件挂载与独立审计日志持久化。"
+        description="填写正文、附件和有效期，投递后可查看领取与过期状态。"
         actions={
           <Button
             size="sm"
@@ -644,6 +654,7 @@ export default function MailPanel() {
           </Button>
         }
       />
+      <a href="#automation" className="inline-block text-sm text-accent underline underline-offset-4">配置等级自动邮件礼包</a>
 
       {/* 提示通知条 */}
       {toast && toast.show && (
@@ -671,7 +682,7 @@ export default function MailPanel() {
       )}
 
       {/* 主工作区分割网格：两列顶部自然对齐 */}
-      <div className="grid gap-6 lg:grid-cols-12 items-start">
+      <div className="mail-edit-grid grid gap-6 lg:grid-cols-12 items-start">
         {/* 左侧：邮件公文配置与快捷附件录入卡片（占 7 列） */}
         <div className="lg:col-span-7 flex flex-col">
           <Section title="邮件公文编辑" description="发件人、标题与正文严格限制输入中英文、数字及日常标点" className="flex flex-col">
@@ -711,6 +722,16 @@ export default function MailPanel() {
                   )}
                 </TextField>
 
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-1 text-sm">有效期方式
+                    <select className="w-full rounded-lg border border-separator bg-surface px-3 py-2" value={expiryMode} onChange={e => setExpiryMode(e.target.value as 'days' | 'date')}>
+                      <option value="days">发送后指定天数</option><option value="date">指定截止时间</option>
+                    </select>
+                  </label>
+                  {expiryMode === 'days' ? <TextField fullWidth value={validDays} onChange={setValidDays} isRequired><Label>有效天数</Label><Input type="number" min={1} max={3650} /></TextField>
+                    : <TextField fullWidth value={expireAt} onChange={setExpireAt} isRequired><Label>截止时间（浏览器本地时间）</Label><Input type="datetime-local" /></TextField>}
+                  <p className={`text-xs sm:col-span-2 ${expiryError ? 'text-danger' : 'text-muted'}`}>{expiryError || '到期后邮件不再显示在游戏收件箱，未领取的附件不能再领取。'}</p>
+                </div>
                 <Separator className="my-0.5" />
 
                 {/* 附件智能搜索与快捷录入窗口 */}
@@ -725,7 +746,7 @@ export default function MailPanel() {
 
                   {/* 搜索建议与数量录入行 */}
                   <div className="relative mb-2.5">
-                    <div className="flex items-center gap-2">
+                    <div className="mail-item-entry flex items-center gap-2">
                       <div className="relative flex-1 min-w-[140px]">
                         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted pointer-events-none" />
                         <input
@@ -902,7 +923,7 @@ export default function MailPanel() {
               )
             }
           >
-            <div style={{ height: leftCardHeight > 0 ? `${leftCardHeight}px` : undefined }}>
+            <div className="mail-attachments-body" style={{ height: leftCardHeight > 0 ? `${leftCardHeight}px` : undefined }}>
               <Card className="h-full flex flex-col p-5">
                 {/* 附件列表展示区：flex-1 min-h-0 自适应撑满高度，超出时内部局部滚动，绝不撑大卡片 */}
                 <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1.5 cp-scroll mb-3 border border-separator/60 rounded-xl p-2 bg-surface-secondary/20">
@@ -1032,7 +1053,7 @@ export default function MailPanel() {
                   isDisabled={!isFormValid || isSubmitting}
                 >
                   <Send className={cn('size-4', isSubmitting && 'animate-spin')} />
-                  {isSubmitting ? '正在写入数据库与广播...' : '确认投递邮件'}
+                  {isSubmitting ? '正在投递…' : '确认投递邮件'}
                 </Button>
 
                 {!isFormValid && (
@@ -1050,7 +1071,7 @@ export default function MailPanel() {
       {/* 底部：发送历史记录窗口（原生高可靠表格结构，杜绝白屏崩溃） */}
       <Section
         title="邮件记录与收件箱状态"
-        description="专有审计日志持久化于 v5_server/data/gm_mail_history.json，游戏信箱反映客户端真实状态"
+        description="查看发送记录、附件领取与过期状态。"
         actions={
           <div className="flex items-center gap-2">
             <div className="flex rounded-lg bg-surface-secondary p-0.5 text-xs">
@@ -1219,10 +1240,10 @@ export default function MailPanel() {
                           <Chip
                             size="sm"
                             variant="soft"
-                            color={mail.is_claimed ? 'default' : mail.attachments?.length ? 'warning' : 'default'}
+                            color={mail.is_expired ? 'danger' : mail.is_claimed ? 'default' : mail.attachments?.length ? 'warning' : 'default'}
                           >
                             <Chip.Label>
-                              {mail.is_claimed ? '已领取' : mail.attachments?.length ? '未领取' : (mail.is_read ? '已读' : '未读')}
+                              {mail.is_expired ? '已过期' : mail.is_claimed ? '已领取' : mail.attachments?.length ? '未领取' : (mail.is_read ? '已读' : '未读')}
                             </Chip.Label>
                           </Chip>
                         </td>
@@ -1270,6 +1291,7 @@ export default function MailPanel() {
                     <span>发件人：<strong className="text-foreground">{selectedMail?.sender}</strong></span>
                     <span>·</span>
                     <span>时间：{selectedMail?.sent_at_str}</span>
+                    {selectedMail?.expire_time ? <span>· 截止：{new Date(selectedMail.expire_time * 1000).toLocaleString('zh-CN')}</span> : null}
                     {selectedMail?.statusText && (
                       <>
                         <span>·</span>

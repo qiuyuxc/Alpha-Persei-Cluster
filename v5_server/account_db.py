@@ -2285,6 +2285,7 @@ CREATE TABLE IF NOT EXISTS admin_cat_explore_queue (
 
 # 列迁移（幂等：已存在则跳过）——新表建表走 SCHEMA，加列走这里
 _COLUMN_MIGRATIONS = [
+    ("rogueteam_user", "tech_point", "INTEGER DEFAULT 0"),
     ("currency", "last_fatigue_recover_time", "INTEGER DEFAULT 0"),  # 活力(货币id=4)恢复时间点
     ("currency", "update_ts", "INTEGER DEFAULT 0"),                   # 更新时间戳（最新值仲裁）
     ("material", "update_ts", "INTEGER DEFAULT 0"),                   # 更新时间戳（最新值仲裁）
@@ -2354,6 +2355,7 @@ _COLUMN_MIGRATIONS = [
     ("game_user", "last_login_task_cycle_ts", "INTEGER DEFAULT 0"),
     ("task_cfg", "additional_parameter", "TEXT DEFAULT '[]'"),
     ("friend_chat", "peer_uid", "INTEGER DEFAULT 0"),
+    ("polyhedron_meta", "cycle_id", "INTEGER DEFAULT 0"),  # 维度偏移历程周期（存当期窗口起点）
 ]
 
 
@@ -2384,10 +2386,10 @@ class AccountDB:
                 pass
             self._local.conn = None
 
-    def transaction(self):
+    def transaction(self, immediate=False):
         """事务上下文管理器：with db.transaction(): ... 内所有 execute 不自动 commit，
         正常退出统一 commit；异常回滚（原子性，操作调度 apply 用）。"""
-        return _Transaction(self)
+        return _Transaction(self, immediate=immediate)
 
     def _in_txn(self):
         return getattr(self._local, "in_txn", False)
@@ -2989,6 +2991,9 @@ class AccountDB:
             self.mark_claimed(uid, "task", tid, ts)
             if 227000 <= tid <= 227999:
                 self.mark_claimed(uid, "illustrated_task", tid, ts)
+        if cur.rowcount:
+            from fresh_profile import advance_tasks
+            advance_tasks(self, uid)
         return cur.rowcount > 0
 
     # ---------- 活跃度接口（ActivityPt / 28016 / 28019） ----------
@@ -3068,24 +3073,9 @@ class AccountDB:
     # ---------- 战令 / 通行证数据驱动与可靠落库 ----------
 
     def get_or_create_battlepass(self, uid):
-        """获取或初始化战令数据记录，保证 uid 对应的 battlepass 行始终存在。"""
-        rows = self.query("SELECT * FROM battlepass WHERE uid=?", (uid,))
-        if not rows:
-            from res_version_manager import get_version_config
-            list_id = int(get_version_config()["battlepass_list_id"])
-            now_ts = int(time.time())
-            start_ts = now_ts - 7 * 86400
-            end_ts = now_ts + 60 * 86400
-            from lazy_timer import get_weekly_mon_5am_ts
-            next_ref = get_weekly_mon_5am_ts(now_ts) + 7 * 86400
-            self.execute(
-                "INSERT OR IGNORE INTO battlepass "
-                "(uid, battlepass_list_id, pay_level, is_start, weekly_gain_exp, start_timestamp, end_timestamp, next_refresh_timestamp, receive_info, update_ts) "
-                "VALUES (?, ?, 0, 1, 0, ?, ?, ?, '[]', ?)",
-                (uid, list_id, start_ts, end_ts, next_ref, now_ts)
-            )
-            rows = self.query("SELECT * FROM battlepass WHERE uid=?", (uid,))
-        return rows[0] if rows else {}
+        """读取当前持久化周期；只在跨过真实赛季边界时重置。"""
+        from game_cycles import ensure_battlepass
+        return ensure_battlepass(self, uid)
 
     def save_battlepass_receive_info(self, uid, receive_info):
         """保存战令已领取记录（receive_info），保证行存在且即时持久化落库。"""
@@ -3233,6 +3223,10 @@ class AccountDB:
             "SELECT message_id, mtype, sender, content_id FROM momotalk_message ORDER BY message_id ASC"
         )
         msg_rows = cur.fetchall()
+        from fresh_profile import is_fresh
+        if is_fresh(self, uid):
+            msg_rows = [r for r in msg_rows if int(r[0]) in persisted]
+            icon_list = [1]
 
         # 按 type -> sender (hero_id) 分组
         type_groups = {}  # {mtype: {sender: [session_rec, ...]}}
@@ -3432,10 +3426,11 @@ class AccountDB:
         from mail_service import MailService
         return MailService.get_instance(self).delete_mails(uid, mail_id)
 
-    def send_gm_mail(self, uid, title, content, attachments=None, sender="隐科组总务部"):
+    def send_gm_mail(self, uid, title, content, attachments=None, sender="隐科组总务部", expire_time=None):
         """[GM Console] 向指定 UID 邮箱发送一封 GM 邮件并写入数据库。委托 MailService。"""
         from mail_service import MailService
-        return MailService.get_instance(self).send_mail(uid, title, content, attachments=attachments, sender=sender)
+        return MailService.get_instance(self).send_mail(uid, title, content, attachments=attachments,
+                                                        sender=sender, expire_time=expire_time, db=self)
 
     # ------------------------------------------------------------------
     # [Fix by Gemini 3.7-flash] 系统开关管理（system_closed 备份与读取）
@@ -6641,9 +6636,9 @@ def get_db(path=DEFAULT_DB):
 
 
 @contextmanager
-def savepoint_transaction(db):
+def savepoint_transaction(db, immediate=False):
     """可选领域边界：嵌套时也独立回滚，原有transaction合并语义不变。"""
-    with db.transaction():
+    with db.transaction(immediate=immediate):
         connection = db._checked_conn()
         db.execute("SAVEPOINT service_write")
         try:
@@ -6663,8 +6658,9 @@ class _Transaction:
     """事务上下文：with db.transaction(): 内 execute 不自动 commit，退出统一 commit/rollback。
     嵌套支持：内层事务并入外层（同连接 in_txn 标记）。"""
 
-    def __init__(self, db):
+    def __init__(self, db, immediate=False):
         self.db = db
+        self._immediate = immediate
         self._outer = False
         self._connection = None
 
@@ -6676,7 +6672,7 @@ class _Transaction:
             # commit 失败留下了未提交的隐式事务 → "cannot start a transaction within
             # a transaction"），__exit__ 不会被调用，in_txn 永远停在 True，
             # 该线程之后所有 execute 都不再 commit —— 静默丢数据且不可恢复。
-            c.execute("BEGIN")
+            c.execute("BEGIN IMMEDIATE" if self._immediate else "BEGIN")
             self.db._local.in_txn = True
             self._outer = True
             self._connection = c

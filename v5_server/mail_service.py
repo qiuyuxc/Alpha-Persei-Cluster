@@ -6,7 +6,7 @@ mail_service.py — V5 服务端统一邮件与信件收藏室领域服务 (Unif
 1. 统一管理收件箱（Inbox）、收藏箱（Collect Box）、信件收藏室（Special Letters）；
 2. 邮件附件领取全量接入统一资产中心 InventoryService，规范入库货币、材料、刻印、钥从、换装（含重复分解）、场景、头像框并派发 Events；
 3. 严格内化历史避坑规约：
-   - 常驻邮件 expire_time 默认锁定远未来时间戳 2000000000（2033年），杜绝客户端 0 超时误判疯狂弹窗；
+   - 新邮件默认有效 30 天，尊重自定义截止时间，过期邮件不可领取；
    - 详情一律 mail_template_id=0 直出 content_list（保底非空），防止客户端 unpack(nil) 崩溃或死循环请求；
    - content_list 严格遵循 protobuf schema 规范为 repeated content_info (text, content_type=2)；
 4. 根治角色生日信件红点死灰复燃 BUG：
@@ -20,13 +20,13 @@ import os
 import json
 import time
 import logging
-import threading
 from inventory_service import InventoryService
 from event_bus import bus, Events
 from operation_notifications import checkpoint_notifications, restore_notifications
+from account_db import savepoint_transaction
+from game_cycles import integer
 
 logger = logging.getLogger("mail_service")
-_send_mail_lock = threading.Lock()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SPECIAL_LETTERS_PATH = os.path.join(BASE_DIR, "special_letters.json")
@@ -35,6 +35,46 @@ TEMPLATES_PATH = os.path.join(BASE_DIR, "mail_archive", "mail_templates.json")
 
 # 远未来过期时间戳常量（2033-05-18 11:33:20），防止客户端 timeout_timestamp <= server_time 触发 MAIL_EXPIRED 弹窗
 DEFAULT_FAR_FUTURE_EXPIRE = 2000000000
+DEFAULT_VALID_DAYS = 30
+
+
+def resolve_expiry(expire_time=None, valid_days=None, now_ts=None):
+    now = int(time.time()) if now_ts is None else int(now_ts)
+    if expire_time is not None and valid_days is not None:
+        raise ValueError('有效天数和截止时间只能填写一项')
+    if expire_time is not None:
+        return integer(expire_time, '邮件截止时间', now + 1, 4294967295)
+    days = integer(DEFAULT_VALID_DAYS if valid_days is None else valid_days, '邮件有效天数', 1, 3650)
+    return now + days * 86400
+
+
+def normalize_attachments(attachments, db=None):
+    if not isinstance(attachments, list) or len(attachments) > 100:
+        raise ValueError('附件须为数组，最多 100 项')
+    normalized = []
+    for value in attachments:
+        if isinstance(value, dict):
+            aid = value.get('id', value.get('item_id'))
+            count = value.get('number', value.get('num', value.get('count', value.get('item_num'))))
+            name = str(value.get('name') or '')
+        elif isinstance(value, (list, tuple)) and len(value) == 2:
+            aid, count = value
+            name = ''
+        else:
+            raise ValueError('附件须填写物品编号和数量')
+        aid = integer(aid, '附件物品编号', 1)
+        count = integer(count, '附件数量', 1, 999999999)
+        if 200000 <= aid <= 600000 or 830000 <= aid <= 859999:
+            raise ValueError(f'物品 {aid} 属于刻印或套装，禁止邮件发送')
+        if aid == 30054 or 1000000000 <= aid <= 2000000000:
+            raise ValueError(f'物品 {aid} 属于试衣底片，禁止邮件发送')
+        if db is not None:
+            from gm_actions import require_item
+            require_item(db, aid, count)
+            if not name:
+                name = db.query('SELECT name FROM item_catalog WHERE id=?', (aid,))[0]['name']
+        normalized.append({'id': aid, 'number': count, 'name': name})
+    return normalized
 
 
 class MailService:
@@ -119,24 +159,22 @@ class MailService:
         rows = _db.query(
             "SELECT COUNT(*) AS total, "
             "SUM(CASE WHEN read_flag=1 THEN 1 ELSE 0 END) AS unread "
-            "FROM mail WHERE uid=? AND mail_type=1",
-            (uid,)
+            "FROM mail WHERE uid=? AND mail_type=1 AND (COALESCE(expire_time,0)=0 OR expire_time>?)",
+            (uid, int(time.time()))
         )
         total = int(rows[0]["total"] or 0) if rows else 0
         unread = int(rows[0]["unread"] or 0) if rows else 0
         return {"unread_number": unread, "total_number": total}
 
     def get_inbox_list(self, uid, db=None):
-        """获取普通收件箱邮件列表（sc_30003）。
-        严格锁定 expire_time >= 2000000000，防止客户端把常驻邮件当过期邮件狂弹窗。"""
+        """获取有效普通收件箱邮件列表（sc_30003），保留真实截止时间。"""
         _db = self._get_db(db)
         if not _db:
             return []
         rows = _db.query(
-            "SELECT * FROM mail WHERE uid=? AND mail_type=1 ORDER BY send_time DESC",
-            (uid,)
+            "SELECT * FROM mail WHERE uid=? AND mail_type=1 AND (COALESCE(expire_time,0)=0 OR expire_time>?) ORDER BY send_time DESC",
+            (uid, int(time.time()))
         )
-        now_ts = int(time.time())
         lst = []
         for r in rows:
             attachment_list = []
@@ -158,7 +196,7 @@ class MailService:
                     pass
 
             exp = int(r.get("expire_time") or 0)
-            if exp <= now_ts:
+            if exp == 0:
                 exp = DEFAULT_FAR_FUTURE_EXPIRE
 
             attach_flag = int(r.get("attach_flag") or 2)
@@ -217,6 +255,9 @@ class MailService:
         if not rows:
             return None
         r = rows[0]
+        expired = 0 < int(r.get('expire_time') or 0) <= int(time.time())
+        if expired and int(r.get('mail_type') or 1) == 1:
+            return None
 
         # 解析正文内容（转为 content_info 结构）
         content_list = []
@@ -261,6 +302,9 @@ class MailService:
                         attachments.append({"id": aid, "number": num})
             except Exception:
                 pass
+
+        if expired:
+            attachments = []
 
         # 阅读邮件自动标记已读
         now_ts = int(time.time())
@@ -309,15 +353,17 @@ class MailService:
     def _claim_mail_attachments(self, uid, mail_id, ctx, _db):
         """调用方持有事务：只选待领邮件，完整发奖后才确认领取事实。"""
         mid = int(mail_id or 0)
+        now_ts = int(time.time())
         if mid > 0:
             rows = _db.query("SELECT * FROM mail WHERE uid=? AND mail_id=? AND attach_flag=1", (uid, mid))
+            if rows and 0 < int(rows[0].get('expire_time') or 0) <= now_ts:
+                raise ValueError('邮件已过期，无法领取附件')
         else:
-            rows = _db.query("SELECT * FROM mail WHERE uid=? AND attach_flag=1", (uid,))
+            rows = _db.query("SELECT * FROM mail WHERE uid=? AND attach_flag=1 AND (COALESCE(expire_time,0)=0 OR expire_time>?)", (uid, now_ts))
 
         all_items_to_add = []
         claimed_attachments = []
         success_mail_ids = []
-        now_ts = int(time.time())
 
         for m in rows:
             m_id = int(m["mail_id"])
@@ -411,61 +457,33 @@ class MailService:
             }
         return {"mail_id": mail_id, "opt": opt, "collect_mail": collect_info}
 
-    def send_mail(self, uid, title, content, attachments=None, sender="隐科组总务部", template_id=0, expire_time=None, db=None):
+    def send_mail(self, uid, title, content, attachments=None, sender="隐科组总务部", template_id=0, expire_time=None, db=None, now_ts=None):
         """全服通用发信接口（支持业务模块与控制台一键发信）。
         - 自动计算下一封递增 mail_id；
-        - expire_time 默认填入远未来时间戳 2000000000，防止超时弹窗。"""
+        - 默认有效 30 天；序号与投递在同一事务中确认。"""
         _db = self._get_db(db)
         if not _db:
             return 0
-        with _send_mail_lock:
-            now_ts = int(time.time())
-            exp_ts = int(expire_time) if expire_time and int(expire_time) > 0 else DEFAULT_FAR_FUTURE_EXPIRE
-            norm_attachments = []
-            if attachments:
-                for it in attachments:
-                    if isinstance(it, dict):
-                        aid = int(it.get("id") or it.get("item_id") or 0)
-                        anum = int(it.get("number") or it.get("num") or it.get("count") or it.get("item_num") or 0)
-                    elif isinstance(it, (list, tuple)) and len(it) >= 2:
-                        aid, anum = int(it[0]), int(it[1])
-                    else:
-                        continue
-                    if aid > 0 and anum > 0:
-                        if (200000 <= aid <= 600000) or (830000 <= aid <= 859999):
-                            logger.warning(f"[MailService] 拦截不可邮寄的刻印类物品 ID={aid}，已安全跳过")
-                            continue
-                        if aid == 30054 or (1000000000 <= aid <= 2000000000):
-                            logger.warning(f"[MailService] 拦截不可邮寄的试衣底片类道具 ID={aid}，已安全跳过")
-                            continue
-                        norm_attachments.append({"id": aid, "number": anum})
-
-            has_attach = 1 if norm_attachments else 2
-            content_json = json.dumps([content] if isinstance(content, str) else list(content), ensure_ascii=False)
-            attach_json = json.dumps(norm_attachments, ensure_ascii=False)
-
-            for _attempt in range(5):
-                rows = _db.query("SELECT MAX(mail_id) as max_id FROM mail WHERE uid=?", (uid,))
-                max_id = rows[0]["max_id"] if rows and rows[0]["max_id"] else 1000
-                new_mail_id = max_id + 1
-                try:
-                    _db.execute(
-                        """INSERT INTO mail (
-                            uid, mail_id, mail_type, template_id, title, sender,
-                            send_time, expire_time, read_flag, attach_flag,
-                            content_json, attachment_json, star_state, update_ts
-                        ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, ?)""",
-                        (uid, new_mail_id, int(template_id or 0), str(title), str(sender),
-                         now_ts, exp_ts, has_attach, content_json, attach_json, now_ts)
-                    )
-                    logger.info(f"成功下发邮件 uid={uid} mail_id={new_mail_id} title='{title}'")
-                    return new_mail_id
-                except Exception as e:
-                    if "UNIQUE constraint failed" in str(e) and _attempt < 4:
-                        time.sleep(0.02)
-                        continue
-                    raise
-            return 0
+        now_ts = int(time.time()) if now_ts is None else int(now_ts)
+        exp_ts = resolve_expiry(expire_time=expire_time, now_ts=now_ts)
+        norm_attachments = [{'id': it['id'], 'number': it['number']}
+                            for it in normalize_attachments(attachments or [])]
+        with savepoint_transaction(_db, immediate=True):
+            _db.execute('CREATE TABLE IF NOT EXISTS mail_sequence(uid INTEGER PRIMARY KEY,last_id INTEGER NOT NULL)')
+            rows = _db.query('SELECT MAX(mail_id) AS max_id FROM mail WHERE uid=?', (uid,))
+            next_id = max(1000, int(rows[0]['max_id'] or 0)) + 1
+            _db.execute('INSERT INTO mail_sequence(uid,last_id) VALUES(?,?) ON CONFLICT(uid) DO UPDATE SET last_id=MAX(mail_sequence.last_id+1,excluded.last_id)', (uid, next_id))
+            new_mail_id = int(_db.query('SELECT last_id FROM mail_sequence WHERE uid=?', (uid,))[0]['last_id'])
+            _db.execute(
+                """INSERT INTO mail (uid,mail_id,mail_type,template_id,title,sender,send_time,expire_time,
+                    read_flag,attach_flag,content_json,attachment_json,star_state,update_ts)
+                    VALUES(?,?,1,?,?,?,?,?,1,?,?,?,0,?)""",
+                (uid, new_mail_id, int(template_id or 0), str(title), str(sender), now_ts, exp_ts,
+                 1 if norm_attachments else 2,
+                 json.dumps([content] if isinstance(content, str) else list(content), ensure_ascii=False),
+                 json.dumps(norm_attachments, ensure_ascii=False), now_ts))
+        logger.info('邮件已入库 uid=%s mail_id=%s', uid, new_mail_id)
+        return new_mail_id
 
     # =========================================================================
     #  二、修正者专属信件与生日档案红点消解核心业务
@@ -480,6 +498,9 @@ class MailService:
         if _db:
             rows = _db.query("SELECT letter_id, is_viewed FROM letter_special WHERE uid=?", (uid,))
             view_map = {int(r["letter_id"]): bool(r["is_viewed"]) for r in rows}
+            from fresh_profile import is_fresh
+            if is_fresh(_db, uid):
+                return [{"id": lid, "is_viewed": viewed} for lid, viewed in view_map.items()]
 
         result = []
         for l in all_letters:

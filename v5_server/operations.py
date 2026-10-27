@@ -40,6 +40,43 @@ from mail_service import MailService as _MailSvc_activate
 _MailSvc_activate.get_instance()
 
 
+class _GuideFinishOp(Operation):
+    """Persist guide completion before acknowledging SendWithLoadingNew."""
+    prepare_response_in_transaction = True
+    kind = "main"
+
+    def validate(self, data, ctx):
+        guide_id = data.get("mod_guide_id")
+        if isinstance(guide_id, bool) or not isinstance(guide_id, int) or not 0 < guide_id <= 0xFFFFFFFF:
+            raise OperationError(2, "无效的引导 ID")
+        return data
+
+    def apply(self, data, ctx):
+        ctx.db.execute("""INSERT INTO guide (uid,guide_id,kind) VALUES (?,?,?)
+            ON CONFLICT(uid,guide_id) DO UPDATE SET kind=CASE
+                WHEN guide.kind IN ('main','weak','both') AND guide.kind != excluded.kind THEN 'both'
+                ELSE excluded.kind END""", (self.uid, data["mod_guide_id"], self.kind))
+        return {"guide_id": data["mod_guide_id"]}
+
+    def respond(self, result, data, ctx):
+        return [DownFrame(self.sc, ctx.codec_encode(f"sc_{self.sc}", {"result": 0}))]
+
+
+@operation
+class MainGuideFinishOp(_GuideFinishOp):
+    """12012 → 12013: completed main guide; no rewards or stage unlocks."""
+    cmd = 12012
+    sc = 12013
+
+
+@operation
+class WeakGuideFinishOp(_GuideFinishOp):
+    """12112 → 12113: completed hint; shares IDs safely with main guides."""
+    cmd = 12112
+    sc = 12113
+    kind = "weak"
+
+
 def _build_18003_frame(ctx, run_data, uid=None):
     """
     客户端 PolyhedronData.lua 在 18003 处理中调用了 uv0:UpdateProcess()，
@@ -72,13 +109,13 @@ def _build_18003_frame(ctx, run_data, uid=None):
                 frames.append(DownFrame(18001, p18001))
 
             if ctx.codec_encode:
-                import weekly_challenge_service as _wcs
-                nxt_mon = _wcs.get_next_monday_5am()
+                import game_cycles as _gc
+                poly_start, poly_stop = _gc.polyhedron_window(ctx.db)
                 p11003 = ctx.codec_encode("sc_11003", {
                     "activity": {
                         "activity_id": int(version_cfg["polyhedron_activity_id"]),
-                        "start_time": nxt_mon - 604800,
-                        "stop_time": _rvm.FAR_FUTURE_TIMESTAMP,
+                        "start_time": poly_start,
+                        "stop_time": poly_stop,
                         "state": 1,
                         "theme": int(version_cfg["theme_id"]),
                         "template": 73
@@ -940,7 +977,12 @@ class TaskSubmitOp(Operation):
             "result": 0, "reward_list": result["rewards"]}) or b"\x08\x00"
         ctx.log(f"cs_28010 -> 任务领奖 tid={result['task_id']} already={result['already']} 奖={result['rewards']}")
         # 原子时序前置：优先推送资产差分帧 sc_17023，再回显 sc_28011 业务帧，保证客户端在回调触发时资产已是最新状态
-        return _refresh_frames(ctx, self.uid) + [DownFrame(self.sc, payload)]
+        frames = _refresh_frames(ctx, self.uid)
+        from fresh_profile import is_fresh
+        if is_fresh(ctx.db, self.uid):
+            import generator
+            frames.append(DownFrame(28001, generator.gen_payload(28001, uid=self.uid, db=ctx.db)))
+        return frames + [DownFrame(self.sc, payload)]
 
 
 @operation
@@ -1123,6 +1165,10 @@ class TaskOneKeySubmitOp(Operation):
         # 2. 任务领奖响应严禁下发 sc_28019 全量活跃度帧：
         # 客户端在收到 sc_28015 后会在 OnSubmitTaskList 中读取 reward_list 的活跃度货币 (22/35) 本地调用 AddTaskPoint 增量累加；
         # 若在回包中夹带 sc_28019，客户端会先重置为服务端新值，随后再累加本次奖励，导致活跃度 Double-Add 跳变并点亮未达成宝箱。
+        from fresh_profile import is_fresh
+        if is_fresh(ctx.db, self.uid):
+            import generator
+            frames.append(DownFrame(28001, generator.gen_payload(28001, uid=self.uid, db=ctx.db)))
 
         # 3. 差分同步帧：若开出了新换装或新场景，顺带下发 sc_14007 和 sc_32009
         for hid in result.get("touched_heroes", []):
@@ -2632,6 +2678,7 @@ def _get_battlepass_cfg():
 
 def _get_battlepass_level(ctx, uid):
     """根据 14 号货币（BATTLEPASS_EXP）计算当前战令等级（1000 exp / 级，上限 70）。"""
+    ctx.db.get_or_create_battlepass(uid)
     rows = ctx.db.query("SELECT num FROM currency WHERE uid=? AND id=14", (uid,))
     exp = int(rows[0]["num"]) if rows else 0
     return min(70, exp // 1000)

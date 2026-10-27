@@ -574,7 +574,7 @@ class RogueTeamService:
                 "template_id": template_id,
                 "difficult": 1,
                 "max_difficult": 1,
-                "tech_point": 9999,
+                "tech_point": 0,
                 "last_score_id": 0,
                 "update_ts": int(time.time())
             }

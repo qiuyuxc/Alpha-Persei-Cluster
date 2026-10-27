@@ -114,6 +114,9 @@ class LazyTimerBroadcaster:
         if not force and not is_crossing_boundary and (now_ts - last_pulse < 5) and (last_pulse > 0):
             return
 
+        from game_cycles import sync_tasks
+        cycle_changes = sync_tasks(db, uid, now_ts)
+
         # 计算物理时间增量（带防倒流保护）
         if last_pulse <= 0:
             delta_t = 0
@@ -150,6 +153,20 @@ class LazyTimerBroadcaster:
 
         # 原子落库水位线
         db.update_timer_watermark(uid, **updates)
+
+        if hasattr(ctx, 'append_frame') and any(cycle_changes[k] for k in ('daily_reset', 'weekly_reset', 'battlepass_reset')):
+            import generator
+            from middleware import DownFrame
+            if hasattr(ctx, 'touched_items'):
+                ctx.touched_items.update({14, 22, 35})
+            commands = (34031, 28001, 11001, 16015) if cycle_changes['battlepass_reset'] else (34031, 28001)
+            for cmd in commands:
+                payload = generator.gen_payload(cmd, uid=uid, db=db)
+                if payload:
+                    ctx.append_frame(DownFrame(cmd, payload))
+            payload = generator.gen_payload(17023, uid=uid, db=db, touched_items={14, 22, 35})
+            if payload:
+                ctx.append_frame(DownFrame(17023, payload))
 
     def pulse_heartbeat(self, ctx, uid, now_ts=None):
         """
