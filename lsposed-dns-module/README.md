@@ -3,7 +3,7 @@
 将深空之眼的登录与网关域名重定向到自己部署的服务器，并提供游戏内子 GM 抽屉。
 默认服务器为 `127.0.0.1`，可在模块设置页修改，无需重新编译。适用于 ARM64、Android 7+ 和支持 Native Hook / API 93+ 的 LSPosed。
 
-首次安装请阅读 [Android 客户端安装与适配](../docs/ANDROID_SETUP.md)，完成用户 CA 版客户端和自己服务器根证书的安装。已构建的客户端与模块见 [Android 发行页](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-user-ca-v5)。
+首次安装请阅读 [Android 客户端安装与适配](../docs/ANDROID_SETUP.md)。使用者自行准备原始 APK，通过 [本地处理脚本](../tools/android-user-ca/README.md) 生成并签名用户 CA 版，再安装自己服务器的根证书。本模块按下文从源码构建。
 
 ## 使用
 

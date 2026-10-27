@@ -81,6 +81,9 @@ WORK.md
 *.pass
 *.jks
 *.keystore
+*.apk
+*.apk.sha256
+/tools/android-user-ca/output/
 owner-setup.json
 validation.json
 /lsposed-dns-module/build/

@@ -4,7 +4,7 @@
 
 服务端位于 `v5_server/`，桌面启动器位于 `LocalServer/`，Android 模块位于 [`lsposed-dns-module/`](lsposed-dns-module/README.md)。模块默认使用 `127.0.0.1`，在模块内保存服务器 IP 后，DNS 重定向与子 GM 入口会共用该地址。
 
-Android 请先阅读 [客户端安装与适配说明](docs/ANDROID_SETUP.md)：需要用户 CA 版客户端、自己服务器的根 CA 和域名重定向模块。[Android 发行页](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-user-ca-v5) 提供处理后的客户端 APK、模块 APK 与校验文件。
+Android 请先阅读 [客户端安装与适配说明](docs/ANDROID_SETUP.md)。使用者自行准备原始 APK，通过 [本地处理脚本](tools/android-user-ca/README.md) 生成用户 CA 版并使用自己的密钥签名，再安装自己服务器的根 CA 和域名重定向模块。本仓库不提供游戏客户端安装包。
 
 服务端包含独立账号与存档、主/子 GM 管理、周期与自动邮件、公屏/公会人机及公会周周期。使用说明见 [账号设置](v5_server/ACCOUNTS.md)、[GM 功能](v5_server/GM_MANAGEMENT.md) 和 [周期与邮件](v5_server/CYCLES_AND_MAIL.md)。前端修改后分别执行 `npm run build` 和 `npm run build:sub`。资源下发的识别规则和平台限制见 [资源平台说明](v5_server/RESOURCE_PLATFORMS.md)。
 
@@ -203,7 +203,7 @@ Android 请先阅读 [客户端安装与适配说明](docs/ANDROID_SETUP.md)：�
 
 #### 方案 3：Android 用户 CA 客户端与 LSPosed 模块
 
-安装发行页的用户 CA 版游戏客户端，在系统“CA 证书”入口安装自己服务器的根证书，再启用 LSPosed 模块并保存服务器 IPv4 地址。完全重启游戏后生效；GM 入口随模块地址同步更新。完整步骤、签名冲突处理和修改范围见 [Android 安装与适配说明](docs/ANDROID_SETUP.md)。
+使用 [本地处理脚本](tools/android-user-ca/README.md) 处理自己准备的原始 APK 并签名，在系统“CA 证书”入口安装自己服务器的根证书，再构建并启用 LSPosed 模块，保存服务器 IPv4 地址。完全重启游戏后生效；GM 入口随模块地址同步更新。完整步骤、签名冲突处理和修改范围见 [Android 安装与适配说明](docs/ANDROID_SETUP.md)。
 
 ---
 
@@ -423,6 +423,6 @@ Android 请先阅读 [客户端安装与适配说明](docs/ANDROID_SETUP.md)：�
 1. **非商业研究性质**：
    本项目仅供计算机技术爱好者与研究人员对软件逆向工程、网络协议编解码及现代化桌面进程守护等技术课题进行学习与交流。**严禁任何个人或组织将本项目源码、编译产物或相关工具用于商业牟利、付费代理或公开搭建在线服务**；
 2. **知识产权归属**：
-   《深空之眼》（Aether Gazer）游戏客户端内的全部美术资源、音频音效、模型动作、剧本设定及注册商标，均属其原开发商与发行商所有。Release 中的客户端 APK 含有原作资源；本仓库的源码许可证不授予这些第三方资源的权利；
+   《深空之眼》（Aether Gazer）游戏客户端内的全部美术资源、音频音效、模型动作、剧本设定及注册商标，均属其原开发商与发行商所有。本仓库不分发游戏客户端 APK；本地处理脚本及本仓库的源码许可证不授予这些第三方资源的权利；
 3. **法律责任自负**：
    使用者应当在体验后自行移除相关调试文件，并自觉支持正版游戏产品。使用者因违反相关法律法规或服务协议而产生的任何民事、刑事及连带法律责任，均由使用者自行承担，本项目开发者不承担任何直接或连带责任。
