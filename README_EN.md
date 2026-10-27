@@ -4,6 +4,8 @@
 
 The server is in `v5_server/`, the desktop launcher in `LocalServer/`, and the Android LSPosed module in [`lsposed-dns-module/`](lsposed-dns-module/README.md). The module defaults to `127.0.0.1`; save your server IPv4 address in the module settings to configure both DNS redirection and the GM page without rebuilding.
 
+For Android, follow the [client setup guide (Chinese)](docs/ANDROID_SETUP.md): install the user-CA client, your own server's root CA, and the LSPosed DNS module. The [Android release](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-user-ca-v5) contains both APKs and SHA256 checksums.
+
 This fork includes separate accounts and saves, GM management, recurring activities and mail, social bots, and weekly guild phases. Build the main and mobile GM pages with `npm run build` and `npm run build:sub`. Player databases, credentials, signing keys, logs, local work notes, and complete game resources are excluded. Supply the base database, client resources, and server certificates before running. The upstream project and release documentation follows below.
 
 
@@ -195,7 +197,11 @@ Add static resolution entries to `C:\Windows\System32\drivers\etc\hosts` pointin
    ```
 3. In iOS Wi-Fi settings, manually set the DNS server to the PC's LAN IP (`192.168.1.100`);
 4. Open Safari on iOS, navigate to `http://192.168.1.100/sdk_ca.mobileconfig`, then install and trust the profile;
-5. **Note**: Due to limited testing hardware, only iOS has undergone preliminary verification. Android and HarmonyOS have not yet been systematically tested, though the underlying networking principles remain comparable.
+5. **Note**: This section describes iOS LAN setup. Android uses the dedicated procedure below; HarmonyOS has not been independently verified.
+
+#### Method 3: Android User-CA Client and LSPosed Module
+
+Install the user-CA game APK, install your own server's root CA through Android's CA certificate settings, then enable the LSPosed module and save your server IPv4 address. Restart the game completely. The GM URL follows the saved address. See the [Android setup guide](docs/ANDROID_SETUP.md) for signature compatibility, configuration and the exact client modifications.
 
 ---
 
@@ -415,6 +421,6 @@ The management console is built with **React 19 + TypeScript + Tailwind CSS** an
 1. **Non-Commercial Research Purpose**:
    This project is intended strictly for personal educational research, reverse engineering study, and distributed system exploration. **Under no circumstances should this source code or its binaries be used for commercial profit, paid services, or public online deployment**;
 2. **Intellectual Property Rights**:
-   All artistic assets, models, audio, voice acting, text scripts, worldbuilding, and trademarks related to *Aether Gazer* belong exclusively to the original developer and publisher. **This repository does not distribute or alter any proprietary binary assets from the official client**;
+   All artistic assets, models, audio, voice acting, text scripts, worldbuilding, and trademarks related to *Aether Gazer* belong exclusively to the original developer and publisher. Client APKs attached to Releases contain original game assets; the source-code license does not grant rights to those third-party assets;
 3. **User Responsibility**:
    Users should remove research files within 24 hours of testing and support the official game product. Any legal liability arising from misuse rests entirely with the individual user; the authors assume no direct or indirect responsibility.
