@@ -1839,6 +1839,12 @@ CREATE TABLE IF NOT EXISTS regression (              -- sc_62019 回归活动抽
     draw_over_sign INTEGER DEFAULT 0,
     received_sign_list TEXT DEFAULT '[]',
     find_time INTEGER DEFAULT 0,
+    trigger_time INTEGER DEFAULT 0,
+    end_ts INTEGER DEFAULT 0,
+    return_vs_id INTEGER DEFAULT 110,
+    receive_sign_index INTEGER DEFAULT 0,
+    find_task_claimed_ts INTEGER DEFAULT 0,
+    state_version INTEGER DEFAULT 0,
     update_ts INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS core_verification_badge ( -- sc_23485 核心验证挑战图鉴徽章（行化）
@@ -2346,6 +2352,12 @@ _COLUMN_MIGRATIONS = [
     # 回归活动（Regression 62xxx）签到与找回列
     ("regression", "received_sign_list", "TEXT DEFAULT '[]'"),
     ("regression", "find_time", "INTEGER DEFAULT 0"),
+    ("regression", "trigger_time", "INTEGER DEFAULT 0"),
+    ("regression", "end_ts", "INTEGER DEFAULT 0"),
+    ("regression", "return_vs_id", "INTEGER DEFAULT 110"),
+    ("regression", "receive_sign_index", "INTEGER DEFAULT 0"),
+    ("regression", "find_task_claimed_ts", "INTEGER DEFAULT 0"),
+    ("regression", "state_version", "INTEGER DEFAULT 0"),
     # 虚构推演（RogueTeam 88xxx）步数与倍率
     ("rogueteam_session", "room_passed_count", "INTEGER DEFAULT 0"),
     ("rogueteam_session", "battle_passed_count", "INTEGER DEFAULT 0"),
@@ -3095,7 +3107,8 @@ class AccountDB:
         rows = self.query("SELECT * FROM newbie_activity WHERE uid=?", (uid,))
         if not rows:
             now_ts = int(time.time())
-            completed_time = now_ts + 30 * 86400
+            from newbie_service import get_rules
+            completed_time = now_ts + int(get_rules()['duration_days']) * 86400
             self.execute(
                 "INSERT OR IGNORE INTO newbie_activity "
                 "(uid, completed_time, now_sign_times, last_sign_ts, fr_first_gear, fr_second_gear, "

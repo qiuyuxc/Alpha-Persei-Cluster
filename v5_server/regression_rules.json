@@ -1,0 +1,96 @@
+{
+  "bundle_sha256": "e5c7ffafa74e22e0ea75a32af4cb763277e56e6e11e95d91636f84a3aa8acefe",
+  "schema_version": 1,
+  "min_offline_days": 14,
+  "min_account_level": 30,
+  "duration_days": 30,
+  "version_id": 110,
+  "signs": [
+    {
+      "id": 23001,
+      "items": [
+        {
+          "id": 38,
+          "num": 1
+        }
+      ]
+    },
+    {
+      "id": 23002,
+      "items": [
+        {
+          "id": 38,
+          "num": 4
+        }
+      ]
+    },
+    {
+      "id": 23003,
+      "items": [
+        {
+          "id": 1,
+          "num": 100
+        }
+      ]
+    },
+    {
+      "id": 23004,
+      "items": [
+        {
+          "id": 1,
+          "num": 150
+        }
+      ]
+    },
+    {
+      "id": 23005,
+      "items": [
+        {
+          "id": 38,
+          "num": 2
+        }
+      ]
+    },
+    {
+      "id": 23006,
+      "items": [
+        {
+          "id": 1,
+          "num": 150
+        }
+      ]
+    },
+    {
+      "id": 23007,
+      "items": [
+        {
+          "id": 38,
+          "num": 3
+        }
+      ]
+    }
+  ],
+  "legacy_sign_ids": [
+    10001,
+    10002,
+    10003,
+    10004,
+    10005,
+    10006,
+    10007
+  ],
+  "initial_find_times": 30,
+  "find_task_id": 60401,
+  "find_task_bonus": 1,
+  "find_rewards": [
+    {
+      "id": 4,
+      "num": 240
+    },
+    {
+      "id": 2,
+      "num": 50000
+    }
+  ],
+  "find_rewards_source": "Existing cs_62017 server reward contract"
+}

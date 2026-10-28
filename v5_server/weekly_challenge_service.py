@@ -658,7 +658,11 @@ def get_core_verification_catalog():
     return _load_catalog("core_verification_catalog.json")
 
 def get_core_verification_cl_catalog():
-    return _load_catalog("core_verification_cl_catalog.json")
+    from core_verification_mode4_service import get_rules
+    rules = get_rules()
+    catalog = dict(_load_catalog('core_verification_cl_catalog.json'))
+    catalog['mode4'] = {key: {**stage, 'mode': 4} for key, stage in rules['stages'].items()}
+    return catalog
 
 def get_core_verification_rewards_catalog():
     return _load_catalog("core_verification_rewards_complete.json")
@@ -799,6 +803,10 @@ def get_core_verification_challenge_data(uid, db, activity_id=None):
         activity_id = 3539501
 
     activity_id = int(activity_id)
+    import core_verification_mode4_service as mode4
+    mode4_id = mode4.canonical_activity(activity_id, strict=False)
+    if mode4_id is not None:
+        activity_id = mode4_id
     prog = {}
     claimed_tasks = []
     badges = []
@@ -812,6 +820,10 @@ def get_core_verification_challenge_data(uid, db, activity_id=None):
                 badges = db.get_core_verification_cl_badges(uid)
         except Exception:
             pass
+
+    if mode4_id is not None and db:
+        prog = mode4.stage_progress(db, uid, activity_id)
+        claimed_tasks = mode4.claimed_tasks(db, uid, activity_id)
 
     mode_num = 1
     stages_pool = {}
@@ -854,6 +866,8 @@ def get_core_verification_challenge_data(uid, db, activity_id=None):
     selected_buffs = main_prog.get("select_buffs", [])
 
     task_items = [{"assignment_id": int(tid), "state": 2} for tid in claimed_tasks]
+    if mode_num == 4 and db:
+        task_items = mode4.task_states(db, uid, activity_id)
     formatted_buffs = [
         {"buff_id": int(b), "level": 1, "type": 1} if isinstance(b, int) else b
         for b in set(unlocked_buffs)

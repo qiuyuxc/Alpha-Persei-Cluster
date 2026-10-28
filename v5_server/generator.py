@@ -1025,27 +1025,8 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         })
     if cmd == 62011:
         # 回归活动数据（RegressionDataNew 初始化）
-        import time as _t, json as _j
-        now_ts = int(_t.time())
-        row = db.query("SELECT * FROM regression WHERE uid=?", (uid,))
-        r = row[0] if row else {}
-        end_ts = int(r.get("end_ts") or (now_ts + 14 * 86400))
-        try:
-            rec_signs = _j.loads(r.get("received_sign_list") or "[]")
-        except Exception:
-            rec_signs = []
-        return encode("sc_62011", {
-            "end_timestamps": end_ts,
-            "return_vs_id": int(r.get("return_vs_id") or 110),
-            "return_level": 1,
-            "mul_times": 1,
-            "receive_sign_index": int(r.get("receive_sign_index") or 7),
-            "received_sign_list": [int(x) for x in rec_signs],
-            "left_day": max(0, int((end_ts - now_ts) / 86400)),
-            "find_time": int(r.get("find_time") or 0),
-            "open_draw_sign": True,
-            "pic_sign": False
-        })
+        import regression_service
+        return encode('sc_62011', regression_service.build_payload(db, uid))
     if cmd == 34031:
         # [Fix by Gemini 3.7-flash] 战令/通行证数据库驱动 → sc_34031 (自适应版本赛季)
         import json as _jm

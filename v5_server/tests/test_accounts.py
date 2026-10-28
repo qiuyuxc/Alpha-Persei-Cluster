@@ -326,6 +326,9 @@ class AccountTests(unittest.TestCase):
         from server_net import ThreadedServer, GameHandler
         core = types.SimpleNamespace(log=lambda *a, **kw: None)
         server = ThreadedServer(('127.0.0.1', 0), GameHandler)
+        # server_close must join handlers before tearDown deletes their SQLite files.
+        server.daemon_threads = False
+        server.block_on_close = True
         server.core, server.db, server.generator = core, self.db, generator
         server.codec_encode, server.codec_decode = codec.encode, codec.decode
         server.game_port = server.server_address[1]

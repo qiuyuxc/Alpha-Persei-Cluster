@@ -1431,6 +1431,16 @@ class ServantLockOp(Operation):
         return result.get("frames", [])
 
 
+def _weapon_upgrade_response(ctx, uid, sc, hero_id, data):
+    payload = ctx.codec_encode(f'sc_{sc}', data)
+    if not payload:
+        raise ValueError(f'必要权钥回执 sc_{sc} 为空')
+    from hero_service import HeroService
+    frames = HeroService.get_instance(db=ctx.db).build_hero_refresh_frames(ctx, uid, hero_id, strict=True)
+    return ([frame for frame in frames if frame.cmd != 14007] + [DownFrame(sc, payload)] +
+            [frame for frame in frames if frame.cmd == 14007])
+
+
 @operation
 class HeroWeaponStrOp(Operation):
     """权钥强化/升级：cs_46016 {hero_id, material_list, servant_list} → sc_46017 {result: 0}。
@@ -1438,6 +1448,7 @@ class HeroWeaponStrOp(Operation):
 
     cmd = 46016
     sc = 46017
+    prepare_response_in_transaction = True
 
     def apply(self, data, ctx):
         ctx.uid = self.uid
@@ -1449,13 +1460,7 @@ class HeroWeaponStrOp(Operation):
         return svc.enhance_weapon(ctx, self.uid, hid, material_list=mlist, servant_list=slist)
 
     def respond(self, result, data, ctx):
-        payload = ctx.codec_encode("sc_46017", {"result": 0}) or b"\x08\x00"
-        ctx.log(f"cs_46016 -> 权钥升级 hero={result['hero_id']} 突破阶段={result['cur_break']} +{result['exp_added']}exp -> exp={result['new_exp']}")
-        from hero_service import HeroService
-        svc = HeroService.get_instance(db=ctx.db)
-        diff_frames = svc.build_diff_frames(ctx, self.uid)
-        hero_frames = svc.build_hero_14007_frame(ctx, self.uid, result.get("hero_id"))
-        return diff_frames + [DownFrame(self.sc, payload)] + hero_frames
+        return _weapon_upgrade_response(ctx, self.uid, self.sc, result['hero_id'], {'result': 0})
 
 
 @operation
@@ -1465,6 +1470,7 @@ class HeroWeaponBreakOp(Operation):
 
     cmd = 46018
     sc = 46019
+    prepare_response_in_transaction = True
 
     def apply(self, data, ctx):
         ctx.uid = self.uid
@@ -1474,13 +1480,7 @@ class HeroWeaponBreakOp(Operation):
         return svc.break_weapon(ctx, self.uid, hid)
 
     def respond(self, result, data, ctx):
-        payload = ctx.codec_encode("sc_46019", {"result": 0}) or b"\x08\x00"
-        ctx.log(f"cs_46018 -> 权钥突破 hero={result['hero_id']} 阶数={result['new_break']}")
-        from hero_service import HeroService
-        svc = HeroService.get_instance(db=ctx.db)
-        diff_frames = svc.build_diff_frames(ctx, self.uid)
-        hero_frames = svc.build_hero_14007_frame(ctx, self.uid, result.get("hero_id"))
-        return diff_frames + [DownFrame(self.sc, payload)] + hero_frames
+        return _weapon_upgrade_response(ctx, self.uid, self.sc, result['hero_id'], {'result': 0})
 
 
 @operation
@@ -1490,6 +1490,7 @@ class HeroWeaponQuickOp(Operation):
 
     cmd = 46034
     sc = 46035
+    prepare_response_in_transaction = True
 
     def apply(self, data, ctx):
         ctx.uid = self.uid
@@ -1503,15 +1504,8 @@ class HeroWeaponQuickOp(Operation):
         return svc.quick_upgrade_weapon(ctx, self.uid, hid, material_list=mlist, servant_list=slist, target_level=tlvl, breakthrough_times=btimes)
 
     def respond(self, result, data, ctx):
-        refund = result.get("refund_items") or []
-        payload = ctx.codec_encode("sc_46035", {"result": 0, "mat_list": refund}) or b"\x08\x00"
-        tlv = data.get("target_level", 0)
-        ctx.log(f"cs_46034 -> 权钥一键升级 hero={result['hero_id']} target_lv={tlv} break={result.get('new_break', 0)}")
-        from hero_service import HeroService
-        svc = HeroService.get_instance(db=ctx.db)
-        diff_frames = svc.build_diff_frames(ctx, self.uid)
-        hero_frames = svc.build_hero_14007_frame(ctx, self.uid, result.get("hero_id"))
-        return diff_frames + [DownFrame(self.sc, payload)] + hero_frames
+        return _weapon_upgrade_response(ctx, self.uid, self.sc, result['hero_id'],
+                                        {'result': 0, 'mat_list': result.get('refund_items') or []})
 
 
 _SERVANT_GOLD_COSTS = {
@@ -2948,6 +2942,7 @@ class OneClickHeroUpOp(Operation):
 
     cmd = 14120
     sc = 14121
+    prepare_response_in_transaction = True
 
     def apply(self, data, ctx):
         ctx.uid = self.uid
@@ -2964,11 +2959,13 @@ class OneClickHeroUpOp(Operation):
         resp_data = {"result": 0}
         if refund_items:
             resp_data["item_list"] = refund_items
-        payload = ctx.codec_encode("sc_14121", resp_data) or b"\x08\x00"
+        payload = ctx.codec_encode("sc_14121", resp_data)
+        if not payload:
+            raise ValueError('必要一键角色升级回执为空')
         ctx.log(f"cs_14120 -> 一键升级+突破 hero={result['hero_id']} → Lv{result['level']} 突破{result['breaks']}次 返还{len(refund_items)}组材料")
         from hero_service import HeroService
         svc = HeroService.get_instance(db=ctx.db)
-        return [DownFrame(self.sc, payload)] + svc.build_hero_refresh_frames(ctx, self.uid, hero_id=result.get("hero_id"))
+        return [DownFrame(self.sc, payload)] + svc.build_hero_refresh_frames(ctx, self.uid, hero_id=result.get("hero_id"), strict=True)
 
 
 @operation
@@ -7796,39 +7793,21 @@ class CoreVerificationMode4GetRewardOp(Operation):
     """cs_89804 {activity_id, assignment_id} -> sc_89805 {result: 0, reward_list} Mode 4 领奖"""
     cmd = 89804
     sc = 89805
+    prepare_response_in_transaction = True
 
     def apply(self, data, ctx):
-        import weekly_challenge_service as _wcs
-        act_id = int(data.get("activity_id") or 0)
-        ass_id = data.get("assignment_id") or []
-        if isinstance(ass_id, (int, str)):
-            ass_id = [int(ass_id)]
-        
-        cl_cat = _wcs.get_core_verification_cl_catalog()
-        rewards_map = cl_cat.get("rewards", {})
-        granted_items = []
-        for tid in ass_id:
-            r_info = rewards_map.get(str(tid)) or {}
-            items = r_info.get("rewards") or [{"id": 1, "num": 100}]
-            for it in items:
-                _item_add(ctx, self.uid, it["id"], it["num"])
-                granted_items.append(it)
-            if ctx.db and hasattr(ctx.db, "claim_core_verification_cl_task"):
-                ctx.db.claim_core_verification_cl_task(self.uid, act_id, int(tid))
-        
-        if not granted_items:
-            granted_items = [{"id": 1, "num": 100}]
-            for it in granted_items:
-                _item_add(ctx, self.uid, it["id"], it["num"])
-
-        return {"items": granted_items}
+        import core_verification_mode4_service as mode4
+        return {'items': mode4.claim_rewards(ctx, self.uid, int(data.get('activity_id') or 0),
+                                            data.get('assignment_id') or [])}
 
     def respond(self, result, data, ctx):
         payload = ctx.codec_encode("sc_89805", {
             "result": 0,
             "reward_list": result.get("items", [])
-        }) or b"\x08\x00"
-        return [DownFrame(self.sc, payload)] + _refresh_frames(ctx, self.uid)
+        })
+        if not payload:
+            raise ValueError('必要 Mode 4 领奖回执为空')
+        return [DownFrame(self.sc, payload)] + _refresh_frames(ctx, self.uid, strict=True)
 
 
 @operation
@@ -8428,91 +8407,72 @@ class DailyFatigueOp(Operation):
         return frames + _refresh_frames(ctx, self.uid, strict=True)
 
 
+def _onboarding_response(ctx, uid, sc, rewards, state_cmd, reward_field):
+    """Prepare reward assets and receipt before commit; restore activity after its callback."""
+    payload = ctx.codec_encode(f'sc_{sc}', {'result': 0, reward_field: rewards})
+    if not payload:
+        raise ValueError(f'必要奖励回执 sc_{sc} 为空')
+    import generator
+    state = generator.gen_payload(state_cmd, uid=uid, db=ctx.db)
+    if not state:
+        raise ValueError(f'必要活动状态 sc_{state_cmd} 为空')
+    frames = _refresh_frames(ctx, uid, strict=True)
+    import hero_codec
+    for hid in dict.fromkeys(item['id'] for item in rewards):
+        if ctx.db.query('SELECT 1 FROM hero_cfg WHERE hero_id=?', (hid,)):
+            frame = hero_codec.build_hero_14007_frame(ctx.db, uid, hid)
+            if not frame:
+                raise ValueError(f'奖励角色 {hid} 的必要刷新为空')
+            frames.append(frame)
+    return frames + [DownFrame(sc, payload), DownFrame(state_cmd, state)]
+
+
 @operation
 class NoobSignInOp(Operation):
-    """59012 新手每日签到：cs_59012 {} → sc_59013 {result, reward_list}。"""
-
+    """新手签到：按活动版本、游戏日和签到长度领取。"""
     cmd = 59012
     sc = 59013
+    prepare_response_in_transaction = True
 
     def apply(self, data, ctx):
-        uid = self.uid
-        now_ts = int(time.time())
-        row = ctx.db.query("SELECT * FROM newbie_activity WHERE uid=?", (uid,))
-        r = row[0] if row else {}
-        times = int(r.get("now_sign_times") or 0) + 1
-        newbie_rewards = {
-            1: (38, 5), 2: (2, 20000), 3: (41002, 10), 4: (38, 5),
-            5: (40504, 20), 6: (41301, 20), 7: (1, 500), 8: (38, 5),
-            9: (2, 30000), 10: (41002, 15), 11: (38, 5), 12: (40504, 30),
-            13: (41301, 30), 14: (1, 1000)
-        }
-        rw = newbie_rewards.get(times, (38, 1))
-        _item_add(ctx, uid, rw[0], rw[1])
-        ctx.db.execute(
-            "UPDATE newbie_activity SET now_sign_times=?, last_sign_ts=?, update_ts=? WHERE uid=?",
-            (times, now_ts, now_ts, uid)
-        )
-        return {"rewards": [{"id": rw[0], "num": rw[1]}]}
+        import newbie_service
+        return {'rewards': newbie_service.claim_sign(ctx, self.uid)}
 
     def respond(self, result, data, ctx):
-        payload = ctx.codec_encode("sc_59013", {"result": 0, "reward_list": result["rewards"]}) or b"\x08\x00"
-        ctx.log(f"cs_59012 -> 新手每日签到成功，获得={result['rewards']}")
-        frames = [DownFrame(self.sc, payload)]
-        if ctx.generator is not None:
-            try:
-                p11 = ctx.generator.gen_payload(59011, uid=self.uid, db=ctx.db)
-                if p11:
-                    frames.append(DownFrame(59011, p11))
-            except Exception:
-                pass
-        return frames + _refresh_frames(ctx, self.uid)
+        return _onboarding_response(ctx, self.uid, self.sc, result['rewards'],
+                                    59011, 'reward_list')
 
 
 @operation
 class NoobLevelRewardOp(Operation):
-    """59004 新手等级奖励：cs_59004 {level} → sc_59005 {result, reward_list}。"""
-
+    """新手等级奖励：校验有效档位、账号等级及永久领史。"""
     cmd = 59004
     sc = 59005
+    prepare_response_in_transaction = True
 
     def apply(self, data, ctx):
-        uid = self.uid
-        lvl = int(data.get("level") or 10)
-        _item_add(ctx, uid, 1, 200)
-        ctx.db.execute(
-            "INSERT OR REPLACE INTO newbie_level_reward (uid, level, update_ts) VALUES (?, ?, ?)",
-            (uid, lvl, int(time.time()))
-        )
-        return {"rewards": [{"id": 1, "num": 200}]}
+        import newbie_service
+        return {'rewards': newbie_service.claim_level(ctx, self.uid, int(data.get('level') or 0))}
 
     def respond(self, result, data, ctx):
-        payload = ctx.codec_encode("sc_59005", {"result": 0, "reward_list": result["rewards"]}) or b"\x08\x00"
-        ctx.log(f"cs_59004 -> 领取新手等级奖励，获得={result['rewards']}")
-        return [DownFrame(self.sc, payload)] + _refresh_frames(ctx, self.uid)
+        return _onboarding_response(ctx, self.uid, self.sc, result['rewards'],
+                                    59011, 'reward_list')
 
 
 @operation
 class NoobAccumulateRewardOp(Operation):
-    """59014 新手任务累计进度奖励：cs_59014 {id} → sc_59015 {result, reward_list}。"""
-
+    """新手累计奖励：统计当前版本已经提交的任务。"""
     cmd = 59014
     sc = 59015
+    prepare_response_in_transaction = True
 
     def apply(self, data, ctx):
-        uid = self.uid
-        ptid = int(data.get("id") or 1)
-        _item_add(ctx, uid, 38, 2)
-        ctx.db.execute(
-            "INSERT OR REPLACE INTO newbie_pt_reward (uid, pt_id, update_ts) VALUES (?, ?, ?)",
-            (uid, ptid, int(time.time()))
-        )
-        return {"rewards": [{"id": 38, "num": 2}]}
+        import newbie_service
+        return {'rewards': newbie_service.claim_progress(ctx, self.uid, int(data.get('id') or 0))}
 
     def respond(self, result, data, ctx):
-        payload = ctx.codec_encode("sc_59015", {"result": 0, "reward_list": result["rewards"]}) or b"\x08\x00"
-        ctx.log(f"cs_59014 -> 领取新手进度奖励，获得={result['rewards']}")
-        return [DownFrame(self.sc, payload)] + _refresh_frames(ctx, self.uid)
+        return _onboarding_response(ctx, self.uid, self.sc, result['rewards'],
+                                    59011, 'reward_list')
 
 
 @operation
@@ -8677,74 +8637,34 @@ class NoobTag24Op(Operation):
 
 @operation
 class RegressionSignInOp(Operation):
-    """62012 回归签到：cs_62012 {index} → sc_62013 {result, item_list}。"""
-
+    """回归签到：校验当前活动实例和已开放签到配置编号。"""
     cmd = 62012
     sc = 62013
+    prepare_response_in_transaction = True
 
     def apply(self, data, ctx):
-        uid = self.uid
-        now_ts = int(time.time())
-        idx = int(data.get("index") or 1)
-
-        row = ctx.db.query("SELECT * FROM regression WHERE uid=?", (uid,))
-        r = row[0] if row else {}
-        try:
-            rec_signs = json.loads(r.get("received_sign_list") or "[]")
-        except Exception:
-            rec_signs = []
-        if idx not in rec_signs:
-            rec_signs.append(idx)
-
-        # 回归签到奖励 (来自 SignCfg[10001~10007])
-        rewards_map = {
-            1: (2, 20000), 2: (38, 3), 3: (20003, 1), 4: (40301, 300),
-            5: (38, 2), 6: (40803, 10), 7: (38, 5)
-        }
-        rw = rewards_map.get(idx, (38, 1))
-        _item_add(ctx, uid, rw[0], rw[1])
-
-        ctx.db.execute(
-            "INSERT INTO regression (uid, received_sign_list, update_ts) VALUES (?, ?, ?) "
-            "ON CONFLICT(uid) DO UPDATE SET received_sign_list=excluded.received_sign_list, update_ts=excluded.update_ts",
-            (uid, json.dumps(rec_signs), now_ts)
-        )
-        return {"items": [{"id": rw[0], "num": rw[1]}]}
+        import regression_service
+        return {'items': regression_service.claim_sign(ctx, self.uid, int(data.get('index') or 0))}
 
     def respond(self, result, data, ctx):
-        payload = ctx.codec_encode("sc_62013", {"result": 0, "item_list": result["items"]}) or b"\x08\x00"
-        ctx.log(f"cs_62012 -> 回归每日签到成功，获得={result['items']}")
-        frames = [DownFrame(self.sc, payload)]
-        if ctx.generator is not None:
-            try:
-                p11 = ctx.generator.gen_payload(62011, uid=self.uid, db=ctx.db)
-                if p11:
-                    frames.append(DownFrame(62011, p11))
-            except Exception:
-                pass
-        return frames + _refresh_frames(ctx, self.uid)
+        return _onboarding_response(ctx, self.uid, self.sc, result['items'],
+                                    62011, 'item_list')
 
 
 @operation
 class RegressionFindResOp(Operation):
-    """62016 回归资源找回：cs_62016 {} → sc_62017 {result, item_list}。"""
-
+    """回归资源找回：同一事务内扣减剩余次数并发奖。"""
     cmd = 62016
     sc = 62017
+    prepare_response_in_transaction = True
 
     def apply(self, data, ctx):
-        uid = self.uid
-        now_ts = int(time.time())
-        # 找回 240 体力(id=4) 与 50000 金币(id=2)
-        _item_add(ctx, uid, 4, 240)
-        _item_add(ctx, uid, 2, 50000)
-        ctx.db.execute("UPDATE regression SET find_time=?, update_ts=? WHERE uid=?", (now_ts, now_ts, uid))
-        return {"items": [{"id": 4, "num": 240}, {"id": 2, "num": 50000}]}
+        import regression_service
+        return {'items': regression_service.claim_resources(ctx, self.uid)}
 
     def respond(self, result, data, ctx):
-        payload = ctx.codec_encode("sc_62017", {"result": 0, "item_list": result["items"]}) or b"\x08\x00"
-        ctx.log(f"cs_62016 -> 回归资源找回成功，获得={result['items']}")
-        return [DownFrame(self.sc, payload)] + _refresh_frames(ctx, self.uid)
+        return _onboarding_response(ctx, self.uid, self.sc, result['items'],
+                                    62011, 'item_list')
 
 
 # ---------------- 88xxx 虚构推演（Challenge Rogue Team）全套操作 ----------------

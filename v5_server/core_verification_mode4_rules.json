@@ -1,0 +1,1234 @@
+{
+  "bundle_sha256": "e5c7ffafa74e22e0ea75a32af4cb763277e56e6e11e95d91636f84a3aa8acefe",
+  "schema_version": 1,
+  "stages": {
+    "3092091": {
+      "activity_id": 4243501,
+      "recommend": [
+        0,
+        12
+      ],
+      "recommend_team": [
+        1194,
+        1133,
+        1085
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092091,
+      "stage_img": "Bgbc3031",
+      "stage_name": "稳态定轨I",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746010
+      ]
+    },
+    "3092092": {
+      "activity_id": 4243501,
+      "recommend": [
+        6,
+        2
+      ],
+      "recommend_team": [
+        1137,
+        1248,
+        1156
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092092,
+      "stage_img": "Bgbc3035",
+      "stage_name": "稳态定轨II",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746020
+      ]
+    },
+    "3092093": {
+      "activity_id": 4243501,
+      "recommend": [
+        0,
+        8
+      ],
+      "recommend_team": [
+        1020,
+        1089,
+        1073
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092093,
+      "stage_img": "Bgbc3020",
+      "stage_name": "稳态定轨III",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746030
+      ]
+    },
+    "3092111": {
+      "activity_id": 4343501,
+      "recommend": [
+        8,
+        6
+      ],
+      "recommend_team": [
+        1194,
+        1133,
+        1085
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092111,
+      "stage_img": "Bgbc3006",
+      "stage_name": "稳态定轨I",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746050
+      ]
+    },
+    "3092112": {
+      "activity_id": 4343501,
+      "recommend": [
+        14,
+        12
+      ],
+      "recommend_team": [
+        1137,
+        1248,
+        1156
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092112,
+      "stage_img": "Bgbc3032",
+      "stage_name": "稳态定轨II",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746060
+      ]
+    },
+    "3092113": {
+      "activity_id": 4343501,
+      "recommend": [
+        2,
+        10
+      ],
+      "recommend_team": [
+        1020,
+        1089,
+        1073
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092113,
+      "stage_img": "Bgbc3033",
+      "stage_name": "稳态定轨III",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746070
+      ]
+    },
+    "3092121": {
+      "activity_id": 4443501,
+      "recommend": [
+        0,
+        10
+      ],
+      "recommend_team": [
+        1095,
+        1034,
+        1015
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092121,
+      "stage_img": "Bgbc3021",
+      "stage_name": "稳态定轨I",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746090
+      ]
+    },
+    "3092122": {
+      "activity_id": 4443501,
+      "recommend": [
+        14,
+        12
+      ],
+      "recommend_team": [
+        1137,
+        1248,
+        1156
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092122,
+      "stage_img": "Bgbc3026",
+      "stage_name": "稳态定轨II",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746100
+      ]
+    },
+    "3092123": {
+      "activity_id": 4443501,
+      "recommend": [
+        2,
+        10
+      ],
+      "recommend_team": [
+        1054,
+        1077,
+        1075
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092123,
+      "stage_img": "Bgbc3023",
+      "stage_name": "稳态定轨III",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746110
+      ]
+    },
+    "3092131": {
+      "activity_id": 4443502,
+      "recommend": [
+        4,
+        8
+      ],
+      "recommend_team": [
+        1194,
+        1133,
+        1085
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092131,
+      "stage_img": "Bgbc3025",
+      "stage_name": "稳态定轨I",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746130
+      ]
+    },
+    "3092132": {
+      "activity_id": 4443502,
+      "recommend": [
+        14,
+        6
+      ],
+      "recommend_team": [
+        1137,
+        1248,
+        1156
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092132,
+      "stage_img": "Bgbc3026",
+      "stage_name": "稳态定轨II",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746140
+      ]
+    },
+    "3092133": {
+      "activity_id": 4443502,
+      "recommend": [
+        2,
+        12
+      ],
+      "recommend_team": [
+        1044,
+        1211,
+        1166
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092133,
+      "stage_img": "Bgbc3027",
+      "stage_name": "稳态定轨III",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746150
+      ]
+    },
+    "3092141": {
+      "activity_id": 4443503,
+      "recommend": [
+        8,
+        6
+      ],
+      "recommend_team": [
+        1194,
+        1133,
+        1085
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092141,
+      "stage_img": "Bgbc3031",
+      "stage_name": "稳态定轨I",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746170
+      ]
+    },
+    "3092142": {
+      "activity_id": 4443503,
+      "recommend": [
+        14,
+        2
+      ],
+      "recommend_team": [
+        1137,
+        1248,
+        1156
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092142,
+      "stage_img": "Bgbc3035",
+      "stage_name": "稳态定轨II",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746180
+      ]
+    },
+    "3092143": {
+      "activity_id": 4443503,
+      "recommend": [
+        0,
+        10
+      ],
+      "recommend_team": [
+        1054,
+        1077,
+        1075
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092143,
+      "stage_img": "Bgbc3020",
+      "stage_name": "稳态定轨III",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746190
+      ]
+    },
+    "3092151": {
+      "activity_id": 4443504,
+      "recommend": [
+        4,
+        8
+      ],
+      "recommend_team": [
+        1053,
+        1170,
+        1083
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092151,
+      "stage_img": "Bgbc3006",
+      "stage_name": "稳态定轨I",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746210
+      ]
+    },
+    "3092152": {
+      "activity_id": 4443504,
+      "recommend": [
+        4,
+        6
+      ],
+      "recommend_team": [
+        1049,
+        1055,
+        1043
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092152,
+      "stage_img": "Bgbc3032",
+      "stage_name": "稳态定轨II",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746220
+      ]
+    },
+    "3092153": {
+      "activity_id": 4443504,
+      "recommend": [
+        0,
+        12
+      ],
+      "recommend_team": [
+        1044,
+        1211,
+        1166
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3092153,
+      "stage_img": "Bgbc3033",
+      "stage_name": "稳态定轨III",
+      "stage_team": 1,
+      "stage_type": 1,
+      "type_affix": [
+        746230
+      ]
+    },
+    "3093091": {
+      "activity_id": 4243501,
+      "recommend": [
+        4,
+        14,
+        10
+      ],
+      "recommend_team": [
+        1054,
+        1077,
+        1075
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3093091,
+      "stage_img": "Bgbc4025",
+      "stage_name": "峰值激发",
+      "stage_team": 3,
+      "stage_type": 2,
+      "type_affix": [
+        746040
+      ]
+    },
+    "3093111": {
+      "activity_id": 4343501,
+      "recommend": [
+        0,
+        4,
+        6,
+        12,
+        10
+      ],
+      "recommend_team": [
+        1054,
+        1077,
+        1075
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3093111,
+      "stage_img": "Bgbc4028",
+      "stage_name": "峰值激发",
+      "stage_team": 5,
+      "stage_type": 2,
+      "type_affix": [
+        746080
+      ]
+    },
+    "3093121": {
+      "activity_id": 4443501,
+      "recommend": [
+        8,
+        4,
+        6,
+        12
+      ],
+      "recommend_team": [
+        1044,
+        1211,
+        1166
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3093121,
+      "stage_img": "Bgbc4020",
+      "stage_name": "峰值激发",
+      "stage_team": 5,
+      "stage_type": 2,
+      "type_affix": [
+        746120
+      ]
+    },
+    "3093131": {
+      "activity_id": 4443502,
+      "recommend": [
+        0,
+        14,
+        2,
+        10
+      ],
+      "recommend_team": [
+        1054,
+        1077,
+        1075
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3093131,
+      "stage_img": "Bgbc4013",
+      "stage_name": "峰值激发",
+      "stage_team": 5,
+      "stage_type": 2,
+      "type_affix": [
+        746160
+      ]
+    },
+    "3093141": {
+      "activity_id": 4443503,
+      "recommend": [
+        0,
+        4,
+        6,
+        12
+      ],
+      "recommend_team": [
+        1044,
+        1211,
+        1166
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3093141,
+      "stage_img": "Bgbc4025",
+      "stage_name": "峰值激发",
+      "stage_team": 5,
+      "stage_type": 2,
+      "type_affix": [
+        746200
+      ]
+    },
+    "3093151": {
+      "activity_id": 4443504,
+      "recommend": [
+        8,
+        14,
+        2,
+        10
+      ],
+      "recommend_team": [
+        1054,
+        1077,
+        1075
+      ],
+      "stage_affix": [],
+      "stage_com_affix": [
+        730030
+      ],
+      "stage_id": 3093151,
+      "stage_img": "Bgbc4028",
+      "stage_name": "峰值激发",
+      "stage_team": 5,
+      "stage_type": 2,
+      "type_affix": [
+        746240
+      ]
+    }
+  },
+  "activities": {
+    "4243501": {
+      "aliases": [
+        4243501,
+        4243301
+      ]
+    },
+    "4343501": {
+      "aliases": [
+        4343501,
+        4343301
+      ]
+    },
+    "4443501": {
+      "aliases": [
+        4443501,
+        4443301
+      ]
+    },
+    "4443502": {
+      "aliases": [
+        4443502,
+        4443302
+      ]
+    },
+    "4443503": {
+      "aliases": [
+        4443503,
+        4443303
+      ]
+    },
+    "4443504": {
+      "aliases": [
+        4443504,
+        4443304
+      ]
+    }
+  },
+  "tasks": {
+    "50110": {
+      "activity_id": 4243501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092091
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50111": {
+      "activity_id": 4243501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092092
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50112": {
+      "activity_id": 4243501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092093
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50113": {
+      "activity_id": 4243501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3093091
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 60
+        }
+      ]
+    },
+    "50114": {
+      "activity_id": 4243501,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093091,
+          15000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 60
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50115": {
+      "activity_id": 4243501,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093091,
+          22000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 40
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50209": {
+      "activity_id": 4343501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092111
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50210": {
+      "activity_id": 4343501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092112
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50211": {
+      "activity_id": 4343501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092113
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50212": {
+      "activity_id": 4343501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3093111
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 60
+        }
+      ]
+    },
+    "50213": {
+      "activity_id": 4343501,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093111,
+          15000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 60
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50214": {
+      "activity_id": 4343501,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093111,
+          22000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 40
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50301": {
+      "activity_id": 4443501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092121
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50302": {
+      "activity_id": 4443501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092122
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50303": {
+      "activity_id": 4443501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092123
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50304": {
+      "activity_id": 4443501,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3093121
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 60
+        }
+      ]
+    },
+    "50305": {
+      "activity_id": 4443501,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093121,
+          15000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 60
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50306": {
+      "activity_id": 4443501,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093121,
+          22000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 40
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50310": {
+      "activity_id": 4443502,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092131
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50311": {
+      "activity_id": 4443502,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092132
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50312": {
+      "activity_id": 4443502,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092133
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50313": {
+      "activity_id": 4443502,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3093131
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 60
+        }
+      ]
+    },
+    "50314": {
+      "activity_id": 4443502,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093131,
+          15000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 60
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50315": {
+      "activity_id": 4443502,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093131,
+          22000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 40
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50319": {
+      "activity_id": 4443503,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092141
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50320": {
+      "activity_id": 4443503,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092142
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50321": {
+      "activity_id": 4443503,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092143
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50322": {
+      "activity_id": 4443503,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3093141
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 60
+        }
+      ]
+    },
+    "50323": {
+      "activity_id": 4443503,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093141,
+          15000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 60
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50324": {
+      "activity_id": 4443503,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093141,
+          22000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 40
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50328": {
+      "activity_id": 4443504,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092151
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50329": {
+      "activity_id": 4443504,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092152
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50330": {
+      "activity_id": 4443504,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3092153
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 80
+        }
+      ]
+    },
+    "50331": {
+      "activity_id": 4443504,
+      "condition": {
+        "type": 11304,
+        "params": [
+          3093151
+        ]
+      },
+      "items": [
+        {
+          "id": 1,
+          "num": 60
+        }
+      ]
+    },
+    "50332": {
+      "activity_id": 4443504,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093151,
+          15000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 60
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    },
+    "50333": {
+      "activity_id": 4443504,
+      "condition": {
+        "type": 11307,
+        "params": [
+          3093151,
+          22000
+        ]
+      },
+      "items": [
+        {
+          "id": 40603,
+          "num": 40
+        },
+        {
+          "id": 2,
+          "num": 30000
+        }
+      ]
+    }
+  }
+}

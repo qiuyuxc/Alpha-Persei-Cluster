@@ -28,7 +28,9 @@ from core import OperationError
 from lazy_timer import get_daily_5am_ts, get_weekly_mon_5am_ts, get_monthly_5am_ts
 from periodic_gift_service import PeriodicGiftService
 from enchant_slots_util import normalize_enchant_slots
-from operation_notifications import checkpoint_notifications, restore_notifications
+from operation_notifications import operation_transaction
+from client_platform import normalize_platform
+from shop_pricing import quote, declared_costs
 
 logger = logging.getLogger("shop_service")
 
@@ -614,68 +616,65 @@ class ShopService:
         except Exception:
             return 0
 
-    def _cost_breakdown(self, ctx, uid, cost_id, total, cost_type=None):
-        """精准分流扣费（优先移转之辉/移转之花）"""
-        cid = int(cost_id or 0)
-        total = int(total or 0)
+    def _paid_currency(self, ctx, uid, cost_id, declared):
+        platform = normalize_platform(getattr(ctx, 'client_platform', None) or getattr(ctx, 'platform', None))
+        explicit = [cid for cid, amount in declared.items() if cid in (30, 31) and amount]
+        if len(explicit) > 1:
+            raise OperationError(2, '不能混用两个平台的付费移转之花')
+        if platform:
+            paid = 30 if platform == 'ios' else 31
+            if explicit and explicit[0] != paid:
+                raise OperationError(2, '付费移转之花与当前平台不一致')
+            return paid
+        if explicit:
+            return explicit[0]
+        # Legacy game connections do not all carry OS metadata. Honor a concrete
+        # configured bucket, or the only funded bucket; never use global last-client state.
+        if cost_id in (30, 31) and self._get_balance(ctx, uid, cost_id) > 0:
+            return cost_id
+        return 30 if self._get_balance(ctx, uid, 30) > 0 and self._get_balance(ctx, uid, 31) <= 0 else 31
+
+    def _validated_costs(self, ctx, uid, cost_id, total, cost_type, declared):
+        mixed = int(cost_type or 0) == 2
+        flowers = mixed or cost_id == 32
+        paid = self._paid_currency(ctx, uid, cost_id, declared) if flowers else None
+        allowed = {1, 32, paid} if mixed else {32, paid} if flowers else {cost_id}
+        if declared:
+            if any(cid not in allowed for cid in declared) or sum(declared.values()) != total:
+                raise OperationError(2, '购买费用与服务端价格或支付货币不一致')
+            if mixed and declared.get(1, 0) != min(total, max(0, self._get_balance(ctx, uid, 1))):
+                raise OperationError(2, '移转之辉与移转之花的支付拆分无效')
+        return self._cost_breakdown(ctx, uid, cost_id, total, cost_type, paid_id=paid)
+
+    def _cost_breakdown(self, ctx, uid, cost_id, total, cost_type=None, *, paid_id=None):
+        """Resolve only the configured currency or the explicit mixed-payment rule."""
+        cid, total = int(cost_id or 0), int(total or 0)
         if total <= 0:
             return {}
-
-        # 如果商品显式指定扣除移转之花 (ID 30, 31, 32)，精准扣减移转之花 (优先免费花32，再付费花31)
-        if cid in (30, 31, 32):
-            out = {}
-            rem = total
-            have32 = self._get_balance(ctx, uid, 32)
-            have31 = self._get_balance(ctx, uid, 31)
-            if have32 + have31 < rem:
-                raise OperationError(12, f"移转之花不足 (拥有 {have32 + have31}, 需要 {total})")
-            pay32 = min(have32, rem)
-            if pay32 > 0:
-                out[32] = pay32
-                rem -= pay32
-            if rem > 0:
-                out[31] = rem
-            return out
-
-        # 如果扣费目标为移转之辉 (ID 1) 或 cost_type == 2 且未指定其他货币：优先扣移转之辉，不足以移转之花补齐
-        if int(cost_type or 0) == 2 or cid == 1:
-            have1 = self._get_balance(ctx, uid, 1)
-            out = {}
-            if have1 >= total:
-                out[1] = total
-            else:
-                if have1 > 0:
-                    out[1] = have1
-                rem = total - max(0, have1)
-                have32 = self._get_balance(ctx, uid, 32)
-                have31 = self._get_balance(ctx, uid, 31)
-                if have32 + have31 < rem:
-                    raise OperationError(12, f"移转之辉与移转之花不足 (缺 {rem - have32 - have31})")
-                pay32 = min(have32, rem)
-                if pay32 > 0:
-                    out[32] = pay32
-                    rem -= pay32
-                if rem > 0:
-                    out[31] = rem
-            return out
-
-        have = self._get_balance(ctx, uid, cid)
-        if have < total:
-            raise OperationError(12, f"道具/货币 {cid} 不足 (拥有 {have}, 需要 {total})")
-        return {cid: total}
+        mixed = int(cost_type or 0) == 2
+        if not mixed and cid != 32:
+            if self._get_balance(ctx, uid, cid) < total:
+                raise OperationError(12, f'货币/材料 {cid} 不足')
+            return {cid: total}
+        paid = paid_id if paid_id is not None else self._paid_currency(ctx, uid, cid, {})
+        out, remaining = {}, total
+        buckets = (1, 32, paid) if mixed else (32, paid)
+        for bucket in buckets:
+            amount = min(remaining, max(0, self._get_balance(ctx, uid, bucket)))
+            if amount:
+                out[bucket] = amount
+                remaining -= amount
+        if remaining:
+            raise OperationError(12, '可用移转之辉或当前平台移转之花不足')
+        return out
 
     def buy_goods(self, ctx, uid, shop_id, buy_goods_list, buy_source=0):
         """直接服务调用也与Core一样，保证费用、赠品、履约和限购同一事务。"""
         db = getattr(ctx, "db", None) or self.db
         if db is None or self.db is not db:
             raise OperationError(9, "商店数据库上下文不一致")
-        checkpoint = checkpoint_notifications(ctx)
-        try:
-            with db.transaction():
-                return self._buy_goods(ctx, uid, shop_id, buy_goods_list, buy_source)
-        except BaseException:
-            restore_notifications(ctx, checkpoint)
-            raise
+        with operation_transaction(ctx):
+            return self._buy_goods(ctx, uid, shop_id, buy_goods_list, buy_source)
 
     def _buy_goods(self, ctx, uid, shop_id, buy_goods_list, buy_source=0):
         """
@@ -710,14 +709,16 @@ class ShopService:
 
         for b in buy_goods_list:
             gid = int(b.get("buy_id") or b.get("goods_id") or 0)
-            buy_num = int(b.get("buy_num") or 1)
+            buy_num = int(b.get("buy_num", 1))
             btype = int(b.get("buy_type") or 0)
             if buy_num <= 0:
-                continue
+                raise OperationError(2, '购买数量必须为正数')
 
             g = self._find_goods_cfg(gid, sid)
             if not g or not goods_have_client_resources(g):
                 raise OperationError(406, f"商品 {gid} 未配置或不在货架")
+            if int(g.get('shop_id') or sid) != sid:
+                raise OperationError(406, '商品不属于请求的商店')
 
             dj = {}
             if isinstance(g.get("detail_json"), str):
@@ -778,35 +779,12 @@ class ShopService:
                         raise OperationError(402, f"仓库已持有该换装兑换券，不可重复购买")
 
             # 3. 计算价格与扣款
-            client_cost_items = b.get("cost_items") or []
-            if client_cost_items:
-                for c in client_cost_items:
-                    cid = int(c.get("id") or 0)
-                    cnum = int(c.get("num") or 0)
-                    if cid and cnum > 0:
-                        bal = self._get_balance(ctx, uid, cid)
-                        if bal < cnum:
-                            raise OperationError(12, f"货币/材料 {cid} 不足 (拥有 {bal}, 需要 {cnum})")
-                        InventoryService.cost_item(ctx, uid, cid, cnum)
-                        cost_items.append({"item_id": cid, "item_num": cnum})
-            else:
-                use_cheap = (
-                    (btype == 1 and g.get("cheap_cost")) or
-                    (int(g.get("cost") or 0) == 0 and int(g.get("cheap_cost") or 0) > 0) or
-                    (int(g.get("discount") or 0) != 0 and int(g.get("cheap_cost") or 0) > 0)
-                )
-                if use_cheap:
-                    cost_id = g.get("cheap_cost_id") or g.get("cost_id")
-                    unit = g.get("cheap_cost")
-                else:
-                    cost_id = g.get("cost_id")
-                    unit = g.get("cost")
-
-                total_cost = int(unit or 0) * buy_num
-                srv_cost = self._cost_breakdown(ctx, uid, cost_id, total_cost, g.get("cost_type"))
-                for cid, cnum in srv_cost.items():
-                    InventoryService.cost_item(ctx, uid, cid, cnum)
-                    cost_items.append({"item_id": cid, "item_num": cnum})
+            cost_id, total_cost, cost_type = quote(g, dj, sid, btype, buy_num, now)
+            declared = declared_costs(b.get('cost_items') or [])
+            srv_cost = self._validated_costs(ctx, uid, cost_id, total_cost, cost_type, declared)
+            for cid, cnum in srv_cost.items():
+                InventoryService.cost_item(ctx, uid, cid, cnum)
+                cost_items.append({'item_id': cid, 'item_num': cnum})
 
             # 4. 获得道具解析并入库发奖
             give_unit = int(dj.get("give") or g.get("give_num") or 1)
@@ -1055,11 +1033,8 @@ class ShopService:
             except Exception:
                 pass
 
-        try:
-            from operations import _refresh_frames
-            frames.extend(_refresh_frames(ctx, uid))
-        except Exception:
-            pass
+        from operations import _refresh_frames
+        frames.extend(_refresh_frames(ctx, uid, strict=True))
 
         if hasattr(ctx, "log"):
             ctx.log(f"cs_20012 -> 商店购买 {len(give_items)} 项 (已完成扣费、入库与事件广播)")

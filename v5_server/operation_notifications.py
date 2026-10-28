@@ -4,6 +4,8 @@ This tracks existing queues/instance records; it does not change their wire
 format, infer asset ownership or rerun a committed operation.
 """
 
+from contextlib import contextmanager
+
 
 FIELDS = (
     "touched_items", "removed_equips", "removed_weapons",
@@ -37,6 +39,19 @@ def restore_notifications(ctx, checkpoint):
         else:
             original = value
         setattr(ctx, name, original)
+
+
+@contextmanager
+def operation_transaction(ctx):
+    """Rollback a service's SQL and queued changes, including nested callers."""
+    from account_db import savepoint_transaction
+    checkpoint = checkpoint_notifications(ctx)
+    try:
+        with savepoint_transaction(ctx.db, immediate=True):
+            yield
+    except BaseException:
+        restore_notifications(ctx, checkpoint)
+        raise
 
 
 def clear_instance_deletions(ctx):

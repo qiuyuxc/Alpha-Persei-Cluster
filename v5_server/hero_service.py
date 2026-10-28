@@ -17,7 +17,10 @@ import os
 import json
 import time
 import logging
+from functools import wraps
 from core import OperationError
+from client_rule_loader import load_rules
+from operation_notifications import operation_transaction
 from middleware import DownFrame
 import event_bus
 from codec import encode
@@ -307,9 +310,9 @@ WEAPON_MAT_EXP = {
 }
 WEAPON_BREAK_LIMITS = {
     0: 4800,    # Lv20
-    1: 14800,   # Lv30
-    2: 31800,   # Lv40
-    3: 59800,   # Lv50
+    1: 9800,    # Lv30
+    2: 19800,   # Lv40
+    3: 49800,   # Lv50
     4: 99800    # Lv60
 }
 WEAPON_BREAK_COSTS = {
@@ -330,6 +333,16 @@ TRANSITION_TALENT_COST = {
 }
 
 
+def _growth_operation(method):
+    @wraps(method)
+    def run(self, ctx, *args, **kwargs):
+        if getattr(ctx, 'db', None) is None:
+            raise OperationError(406, '角色养成缺少数据库上下文')
+        with operation_transaction(ctx):
+            return method(self, ctx, *args, **kwargs)
+    return run
+
+
 class HeroService:
     """统一修正者角色养成领域服务单例"""
     _instance = None
@@ -348,6 +361,56 @@ class HeroService:
             cls._instance._init_event_listeners()
             cls._instance._listeners_ready = True
         return cls._instance
+
+    @staticmethod
+    def _owned_hero(db, uid, hero_id):
+        rows = db.query('SELECT * FROM hero WHERE uid=? AND id=? AND unlock=1', (uid, int(hero_id)))
+        if not rows:
+            raise OperationError(406, f'英雄 {hero_id} 未解锁或不存在')
+        return rows[0]
+
+    @staticmethod
+    def _growth_costs(ctx, uid, costs):
+        from inventory_service import InventoryService
+        totals = {}
+        for item_id, count in costs:
+            if int(item_id) <= 0 or int(count) <= 0:
+                raise OperationError(406, '养成消耗配置无效')
+            totals[int(item_id)] = totals.get(int(item_id), 0) + int(count)
+        for item_id, count in totals.items():
+            if InventoryService.get_item_balance(ctx, uid, item_id)[1] < count:
+                raise OperationError(3, f'条目不足: id={item_id} 需{count}')
+        for item_id, count in totals.items():
+            InventoryService.cost_item(ctx, uid, item_id, count)
+
+    @staticmethod
+    def _hero_break_rule(db, uid, hero, stage):
+        race = db.query('SELECT race FROM hero_cfg WHERE hero_id=?', (hero['id'],))
+        if not race:
+            raise OperationError(406, '角色阵营配置缺失')
+        rows = db.query('SELECT * FROM hero_break_cfg WHERE race=? AND break_times=?',
+                        (race[0]['race'], stage))
+        next_row = db.query('SELECT max_level FROM hero_break_cfg WHERE race=? AND break_times=?',
+                           (race[0]['race'], stage + 1))
+        if not rows or not next_row:
+            raise OperationError(2, '角色已达最高突破阶段或配置缺失')
+        cfg = rows[0]
+        if int(cfg.get('max_level') or 0) <= 0 or int(cfg.get('user_level') or 0) <= 0:
+            raise OperationError(406, '角色突破等级配置无效')
+        user = db.query('SELECT level FROM users WHERE uid=?', (uid,))
+        if not user or int(user[0]['level'] or 0) < int(cfg['user_level']):
+            raise OperationError(2, '账号等级未达到角色突破条件')
+        try:
+            costs = json.loads(cfg.get('cost') or '[]')
+            if not isinstance(costs, list) or any(len(pair) != 2 or
+                    any(type(value) is not int or value <= 0 for value in pair) for pair in costs):
+                raise ValueError('invalid break materials')
+            gold = int(cfg.get('cost_gold') or 0)
+            if gold < 0 or not (gold or costs):
+                raise ValueError('missing break costs')
+        except (ValueError, TypeError) as exc:
+            raise OperationError(406, '角色突破消耗配置无效') from exc
+        return cfg, ([(2, gold)] if gold else []) + costs
 
     # ============ 战斗结算成长（STAGE_PASS 广播订阅，业务亲和 hero 表） ============
 
@@ -619,6 +682,7 @@ class HeroService:
             "cur_break": break_level
         }
 
+    @_growth_operation
     def break_hero(self, ctx, uid, hero_id):
         """
         英雄突破进阶：cs_14036 -> sc_14037
@@ -629,29 +693,12 @@ class HeroService:
         """
         db = getattr(ctx, "db", self.db)
         hid = int(hero_id)
-        hrow = db.query("SELECT break_level, id FROM hero WHERE uid=? AND id=?", (uid, hid))
-        if not hrow:
-            raise OperationError(406, f"英雄 {hid} 不存在")
-        cur_break = hrow[0]["break_level"] or 0
-        if cur_break >= 8:
-            raise OperationError(2, f"英雄 {hid} 已达最大突破等级")
-
-        race_row = db.query("SELECT race FROM hero_cfg WHERE hero_id=?", (hid,))
-        race = race_row[0]["race"] if race_row and race_row[0].get("race") else 1
-        cfg_id = race * 10 + cur_break
-        bcfg = db.query("SELECT * FROM hero_break_cfg WHERE id=?", (cfg_id,))
-        if not bcfg:
-            raise OperationError(2, f"突破配置缺失: {cfg_id}")
-        c = bcfg[0]
-
-        if c.get("cost_gold"):
-            self._deduct_item(ctx, uid, 2, int(c["cost_gold"]))
-        try:
-            costs = json.loads(c.get("cost") or "[]")
-        except Exception:
-            costs = []
-        for iid, num in costs:
-            self._deduct_item(ctx, uid, int(iid), int(num))
+        hero = self._owned_hero(db, uid, hid)
+        cur_break = int(hero['break_level'] or 0)
+        cfg, costs = self._hero_break_rule(db, uid, hero, cur_break)
+        if int(hero.get('level') or 0) < int(cfg['max_level']):
+            raise OperationError(2, '角色等级未达到当前突破上限')
+        self._growth_costs(ctx, uid, costs)
 
         new_break = cur_break + 1
         db.execute("UPDATE hero SET break_level=?, update_ts=? WHERE uid=? AND id=?",
@@ -664,6 +711,7 @@ class HeroService:
 
         return {"hero_id": hid, "break_level": new_break, "new_break": new_break}
 
+    @_growth_operation
     def one_click_hero_up(self, ctx, uid, hero_id, target_level=0, break_list=None, item_list=None, material_list=None):
         """
         英雄一键升级+突破：cs_14120 -> sc_14121
@@ -673,16 +721,17 @@ class HeroService:
         """
         db = getattr(ctx, "db", self.db)
         hid = int(hero_id)
-        row = db.query("SELECT level, exp, break_level FROM hero WHERE uid=? AND id=?", (uid, hid))
-        if not row:
-            raise OperationError(406, f"英雄 {hid} 不存在")
+        hero = self._owned_hero(db, uid, hid)
+        row = [hero]
 
         cur_level = row[0]["level"] or 1
         cur_exp = row[0]["exp"] or 0
         cur_break = row[0]["break_level"] or 0
 
         race_row = db.query("SELECT race FROM hero_cfg WHERE hero_id=?", (hid,))
-        race = race_row[0]["race"] if race_row and race_row[0].get("race") else 1
+        if not race_row:
+            raise OperationError(406, '角色阵营配置缺失')
+        race = race_row[0]['race']
 
         curve_rows = db.query("SELECT level, hero_exp_need FROM game_level_setting")
         curve = {r["level"]: r["hero_exp_need"] for r in curve_rows} if curve_rows else {}
@@ -692,13 +741,8 @@ class HeroService:
         breaks_done = 0
         break_costs = []
         for _ in (break_list or []):
-            if cur_break >= 8:
-                break
-            cfg_id = race * 10 + cur_break
-            bcfg = db.query("SELECT * FROM hero_break_cfg WHERE id=?", (cfg_id,))
-            if not bcfg:
-                break
-            break_costs.append(bcfg[0])
+            cfg, costs = self._hero_break_rule(db, uid, hero, cur_break)
+            break_costs.append((cfg, costs))
             cur_break += 1
             breaks_done += 1
 
@@ -726,7 +770,7 @@ class HeroService:
             else:
                 continue
             if iid not in EXP_ITEMS or num <= 0:
-                continue
+                raise OperationError(2, '角色经验材料或数量无效')
             raw_exp_add += EXP_ITEMS[iid] * num
             exp_costs.append((iid, num))
 
@@ -743,23 +787,18 @@ class HeroService:
         if final_level < cur_level:
             raise OperationError(2, "升级后的等级不能低于角色当前等级")
 
-        for c in break_costs:
-            if c.get("cost_gold"):
-                self._deduct_item(ctx, uid, 2, int(c["cost_gold"]))
-            try:
-                costs = json.loads(c.get("cost") or "[]")
-            except Exception:
-                costs = []
-            for iid, num in costs:
-                self._deduct_item(ctx, uid, int(iid), int(num))
-        for iid, num in exp_costs:
-            self._deduct_item(ctx, uid, iid, num)
+        all_costs = list(exp_costs)
+        for cfg, costs in break_costs:
+            if final_exp < level_to_exp(cfg['max_level'], curve):
+                raise OperationError(2, '一键升级投入经验不足，无法到达突破门槛')
+            all_costs.extend(costs)
+        self._growth_costs(ctx, uid, all_costs)
 
         refund_items = []
         if cut_exp > 0:
             refund_items = material_give_back(cut_exp)
-            for rit in refund_items:
-                self._add_item(ctx, uid, rit["id"], rit["num"])
+            from inventory_service import InventoryService
+            InventoryService.grant_items(ctx, uid, [(item['id'], item['num']) for item in refund_items], source='hero_exp_refund')
 
         # 4. 落库
         db.execute("UPDATE hero SET exp=?, level=?, break_level=?, update_ts=? WHERE uid=? AND id=?",
@@ -991,161 +1030,110 @@ class HeroService:
 
     # ==================== 4. 权钥与钥从系统 (Weapon & Servant) ====================
 
+    @_growth_operation
     def enhance_weapon(self, ctx, uid, hero_id, material_list=None, servant_list=None):
-        """
-        权钥经验升级：cs_46016 -> sc_46017
-        - 经验材料：初级 100 / 中级 200 / 高级 1000
-        - 三星钥从材料：提供 100 经验并自动卸下销毁
-        - 1 exp = 1 金币
-        - 按突破阶段经验封顶，溢出经验按低阶材料返还 (40203 -> 40202 -> 40201)
-        """
-        db = getattr(ctx, "db", self.db)
-        hid = int(hero_id)
-        mlist = material_list or []
-        slist = servant_list or []
-        exp_add = 0
+        """Enhance an owned weapon using verified materials and its current cap."""
+        result = self._upgrade_weapon(ctx, uid, hero_id, material_list, servant_list)
+        result['giveback'] = [(item['id'], item['num']) for item in result['refund_items']]
+        return result
 
-        # 1. 消耗强化材料
-        for it in mlist:
-            iid = int(it.get("id") or 0)
-            num = int(it.get("num") or 0)
-            if iid and num > 0:
-                self._deduct_item(ctx, uid, iid, num)
-                exp_add += WEAPON_MAT_EXP.get(iid, 100) * num
-
-        # 2. 消耗低星钥从（狗粮，委托 ServantService）
-        if slist:
-            from servant_service import ServantService
-            food_count, food_exp = ServantService.get_instance(db=db).consume_servants_as_food(ctx, uid, slist)
-            exp_add += food_exp
-
-        # 3. 强化金币消耗
-        if exp_add:
-            self._deduct_item(ctx, uid, 2, exp_add)
-
-        hrow = db.query("SELECT weapon_break, weapon_exp FROM hero WHERE uid=? AND id=?", (uid, hid))
-        cur_break = int(hrow[0]["weapon_break"] or 0) if hrow else 0
-        cur_exp = int(hrow[0]["weapon_exp"] or 0) if hrow else 0
-        cap_exp = WEAPON_BREAK_LIMITS.get(cur_break, 99800)
-
-        overflow_exp = max(0, (cur_exp + exp_add) - cap_exp)
-        new_exp = min(cur_exp + exp_add, cap_exp)
-
-        giveback_items = []
-        if overflow_exp > 0:
-            n40203 = overflow_exp // 1000
-            rem = overflow_exp % 1000
-            n40202 = rem // 200
-            rem = rem % 200
-            n40201 = rem // 100
-            for gid, gnum in [(40203, n40203), (40202, n40202), (40201, n40201)]:
-                if gnum > 0:
-                    self._add_item(ctx, uid, gid, gnum)
-                    giveback_items.append((gid, gnum))
-
-        db.execute("UPDATE hero SET weapon_exp=?, update_ts=? WHERE uid=? AND id=?",
-                   (new_exp, int(time.time()), uid, hid))
-
-        try:
-            event_bus.bus.emit(event_bus.Events.HERO_UPGRADE, ctx, uid, hero_id=hid, oper="weapon_upgrade", weapon_exp=new_exp, weapon_break=cur_break)
-        except Exception:
-            pass
-
-        return {
-            "hero_id": hid,
-            "exp_added": exp_add,
-            "new_exp": new_exp,
-            "cur_break": cur_break,
-            "giveback": giveback_items
-        }
-
+    @_growth_operation
     def break_weapon(self, ctx, uid, hero_id):
-        """
-        权钥突破：cs_46018 -> sc_46019
-        - 消耗泉萃取液与金币，递增突破阶数 (上限 4 破)
-        """
-        db = getattr(ctx, "db", self.db)
+        """A break requires the current weapon cap and account-level gate."""
+        return self._upgrade_weapon(ctx, uid, hero_id, breakthrough_times=1)
+
+    @_growth_operation
+    def quick_upgrade_weapon(self, ctx, uid, hero_id, material_list=None, servant_list=None,
+                             target_level=0, breakthrough_times=0):
+        """Plan every requested break before charging, without refunding old exp."""
+        return self._upgrade_weapon(ctx, uid, hero_id, material_list, servant_list,
+                                    target_level, breakthrough_times)
+
+    def _upgrade_weapon(self, ctx, uid, hero_id, material_list=None, servant_list=None,
+                        target_level=0, breakthrough_times=0):
+        from inventory_service import InventoryService
+        db = ctx.db
         hid = int(hero_id)
-        hrow = db.query("SELECT weapon_break, weapon_exp FROM hero WHERE uid=? AND id=?", (uid, hid))
-        cur_break = int(hrow[0]["weapon_break"] or 0) if hrow else 0
-        if cur_break >= 4:
-            raise OperationError(2, f"权钥已达最高突破阶段({cur_break})")
+        hero = self._owned_hero(db, uid, hid)
+        rules = load_rules('weapon_growth_rules.json')
+        cur_break = int(hero.get('weapon_break') or 0)
+        cur_exp = int(hero.get('weapon_exp') or 0)
+        btimes = int(breakthrough_times)
+        target = int(target_level)
+        if cur_break < 0 or cur_break > 4 or cur_exp < 0:
+            raise OperationError(406, '权钥养成记录无效')
+        if btimes < 0 or cur_break + btimes > 4 or target < 0:
+            raise OperationError(2, '权钥突破次数或目标等级无效')
+        current_cap = int(rules['break_exp_limits'][str(cur_break)])
+        if not btimes and cur_exp >= current_cap:
+            raise OperationError(2, '权钥已达到当前阶段经验上限')
 
-        if cur_break in WEAPON_BREAK_COSTS:
-            for item_id, count in WEAPON_BREAK_COSTS[cur_break]:
-                self._deduct_item(ctx, uid, item_id, count)
+        exp_costs = []
+        exp_added = 0
+        for item in material_list or []:
+            try:
+                iid, count = int(item['id']), int(item['num'])
+            except (KeyError, ValueError, TypeError) as exc:
+                raise OperationError(2, '权钥经验材料格式无效') from exc
+            if iid not in WEAPON_MAT_EXP or count <= 0:
+                raise OperationError(2, '权钥经验材料或数量无效')
+            exp_costs.append((iid, count))
+            exp_added += WEAPON_MAT_EXP[iid] * count
 
-        new_break = min(4, cur_break + 1)
-        db.execute("UPDATE hero SET weapon_break=?, update_ts=? WHERE uid=? AND id=?",
-                   (new_break, int(time.time()), uid, hid))
-
-        try:
-            event_bus.bus.emit(event_bus.Events.HERO_UPGRADE, ctx, uid, hero_id=hid, oper="weapon_upgrade", weapon_break=new_break)
-        except Exception:
-            pass
-
-        return {"hero_id": hid, "new_break": new_break}
-
-    def quick_upgrade_weapon(self, ctx, uid, hero_id, material_list=None, servant_list=None, target_level=0, breakthrough_times=0):
-        """权钥一键升级/突破：cs_46034 -> sc_46035"""
-        db = getattr(ctx, "db", self.db)
-        hid = int(hero_id)
-        mlist = material_list or []
-        slist = servant_list or []
-        btimes = int(breakthrough_times or 0)
-        exp_add = 0
-
-        for it in mlist:
-            iid = int(it.get("id") or 0)
-            num = int(it.get("num") or 0)
-            if iid and num > 0:
-                self._deduct_item(ctx, uid, iid, num)
-                exp_add += WEAPON_MAT_EXP.get(iid, 100) * num
-
-        if slist:
+        if servant_list:
             from servant_service import ServantService
-            food_count, food_exp = ServantService.get_instance(db=db).consume_servants_as_food(ctx, uid, slist)
-            exp_add += food_exp
+            _, food_exp = ServantService.get_instance(db=db).consume_servants_as_food(ctx, uid, servant_list)
+            exp_added += food_exp
+        if not exp_added and not btimes:
+            raise OperationError(2, '没有有效的权钥强化投入')
 
-        if exp_add:
-            self._deduct_item(ctx, uid, 2, exp_add)
+        new_break = cur_break + btimes
+        stage_cap = int(rules['break_exp_limits'][str(new_break)])
+        target_exp = rules['level_exps'].get(str(target)) if target else stage_cap
+        if target_exp is None or target_exp < cur_exp or target_exp > stage_cap:
+            raise OperationError(2, '权钥目标等级超限或低于已有经验')
+        potential = cur_exp + exp_added
+        if target and potential < target_exp:
+            raise OperationError(2, '强化投入不足以达到权钥目标等级')
+        new_exp = min(potential, target_exp)
 
-        hrow = db.query("SELECT weapon_break, weapon_exp FROM hero WHERE uid=? AND id=?", (uid, hid))
-        cur_break = int(hrow[0]["weapon_break"] or 0) if hrow else 0
-        cur_exp = int(hrow[0]["weapon_exp"] or 0) if hrow else 0
+        costs = list(exp_costs)
+        if exp_added:
+            gold_rate = int(rules['gold_per_exp'])
+            if gold_rate <= 0:
+                raise OperationError(406, '权钥强化金币配置无效')
+            costs.append((2, exp_added * gold_rate))
+        user = db.query('SELECT level FROM users WHERE uid=?', (uid,))
+        for stage in range(cur_break, new_break):
+            if new_exp < int(rules['break_exp_limits'][str(stage)]):
+                raise OperationError(2, '权钥经验未达到突破门槛')
+            if not user or int(user[0]['level'] or 0) < int(rules['break_user_levels'][str(stage)]):
+                raise OperationError(2, '账号等级未达到权钥突破门槛')
+            stage_costs = rules['break_costs'].get(str(stage))
+            if not stage_costs:
+                raise OperationError(406, '权钥突破消耗配置缺失')
+            costs.extend((item['id'], item['num']) for item in stage_costs)
+        self._growth_costs(ctx, uid, costs)
 
-        # 执行突破消耗
-        for _ in range(btimes):
-            if cur_break in WEAPON_BREAK_COSTS:
-                for item_id, count in WEAPON_BREAK_COSTS[cur_break]:
-                    self._deduct_item(ctx, uid, item_id, count)
-                cur_break = min(4, cur_break + 1)
-
-        cap_exp = WEAPON_BREAK_LIMITS.get(cur_break, 99800)
-        overflow_exp = max(0, (cur_exp + exp_add) - cap_exp)
-        new_exp = min(cur_exp + exp_add, cap_exp)
-
+        overflow = potential - new_exp
         refund_items = []
-        if overflow_exp > 0:
-            n40203 = overflow_exp // 1000
-            rem = overflow_exp % 1000
-            n40202 = rem // 200
-            rem = rem % 200
-            n40201 = rem // 100
-            for gid, gnum in [(40203, n40203), (40202, n40202), (40201, n40201)]:
-                if gnum > 0:
-                    self._add_item(ctx, uid, gid, gnum)
-                    refund_items.append({"id": gid, "num": gnum})
-
-        db.execute("UPDATE hero SET weapon_exp=?, weapon_break=?, update_ts=? WHERE uid=? AND id=?",
-                   (new_exp, cur_break, int(time.time()), uid, hid))
-
+        for iid in (40203, 40202, 40201):
+            count, overflow = divmod(overflow, WEAPON_MAT_EXP[iid])
+            if count:
+                refund_items.append({'id': iid, 'num': count})
+        if refund_items:
+            InventoryService.grant_items(ctx, uid, [(item['id'], item['num']) for item in refund_items], source='weapon_exp_refund')
+        updated = db.execute('UPDATE hero SET weapon_exp=?,weapon_break=?,update_ts=? WHERE uid=? AND id=?',
+                             (new_exp, new_break, int(time.time()), uid, hid))
+        if updated.rowcount != 1:
+            raise OperationError(406, '权钥目标角色不存在')
         try:
-            event_bus.bus.emit(event_bus.Events.HERO_UPGRADE, ctx, uid, hero_id=hid, oper="weapon_upgrade", weapon_exp=new_exp, weapon_break=cur_break)
+            event_bus.bus.emit(event_bus.Events.HERO_UPGRADE, ctx, uid, hero_id=hid,
+                               oper='weapon_upgrade', weapon_exp=new_exp, weapon_break=new_break)
         except Exception:
             pass
-
-        return {"hero_id": hid, "new_break": cur_break, "new_exp": new_exp, "refund_items": refund_items}
+        return {'hero_id': hid, 'cur_break': new_break, 'new_break': new_break,
+                'new_exp': new_exp, 'exp_added': exp_added, 'refund_items': refund_items}
 
     def replace_servant(self, ctx, uid, hero_id, servant_id):
         """
