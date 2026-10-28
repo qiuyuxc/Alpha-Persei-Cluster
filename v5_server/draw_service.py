@@ -327,12 +327,29 @@ class DrawService:
                     PRIMARY KEY (uid, pool_group)
                 )
             """)
+            self.db.execute("""
+                CREATE TABLE IF NOT EXISTS draw_state (
+                    uid INTEGER NOT NULL,
+                    pool_id INTEGER NOT NULL,
+                    since_ssr INTEGER DEFAULT 0,
+                    since_sr INTEGER DEFAULT 0,
+                    total_draws INTEGER DEFAULT 0,
+                    up_id INTEGER DEFAULT 0,
+                    is_up_guaranteed INTEGER DEFAULT 0,
+                    pool_group TEXT DEFAULT '',
+                    PRIMARY KEY (uid, pool_id)
+                )
+            """)
             try:
-                cols = [c["name"] for c in self.db.query("PRAGMA table_info(draw_group_state)")]
-                if "since_sr" not in cols:
-                    self.db.execute("ALTER TABLE draw_group_state ADD COLUMN since_sr INTEGER DEFAULT 0")
+                # Release saves may have the per-pool table without since_sr.
+                # Both copies must support the settlement write; retain all
+                # existing pity counters and independently selected UP targets.
+                for table in ("draw_group_state", "draw_state"):
+                    cols = [c["name"] for c in self.db.query(f"PRAGMA table_info({table})")]
+                    if "since_sr" not in cols:
+                        self.db.execute(f"ALTER TABLE {table} ADD COLUMN since_sr INTEGER DEFAULT 0")
             except Exception as _e:
-                logger.debug(f"[DrawService] 检查/补齐 draw_group_state.since_sr 列: {_e}")
+                logger.debug(f"[DrawService] 检查/补齐抽卡 since_sr 列: {_e}")
             self.db.execute("""
                 CREATE TABLE IF NOT EXISTS draw_record (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -590,18 +607,15 @@ class DrawService:
              int(state["up_id"]), int(state["is_up_guaranteed"]), int(pool_id or state.get("last_pool_id", 0)), now)
         )
         if pool_id:
-            try:
-                self.db.execute(
-                    "INSERT INTO draw_state (uid, pool_id, since_ssr, since_sr, total_draws, up_id, is_up_guaranteed, pool_group) "
-                    "VALUES (?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(uid, pool_id) DO UPDATE SET "
-                    "since_ssr=excluded.since_ssr, since_sr=excluded.since_sr, total_draws=excluded.total_draws, "
-                    "up_id=excluded.up_id, is_up_guaranteed=excluded.is_up_guaranteed, pool_group=excluded.pool_group",
-                    (uid, int(pool_id), int(state["since_ssr"]), int(state.get("since_sr", 0)), int(state["total_draws"]),
-                     int(state["up_id"]), int(state["is_up_guaranteed"]), pool_group)
-                )
-            except Exception:
-                pass
+            self.db.execute(
+                "INSERT INTO draw_state (uid, pool_id, since_ssr, since_sr, total_draws, up_id, is_up_guaranteed, pool_group) "
+                "VALUES (?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(uid, pool_id) DO UPDATE SET "
+                "since_ssr=excluded.since_ssr, since_sr=excluded.since_sr, total_draws=excluded.total_draws, "
+                "up_id=excluded.up_id, is_up_guaranteed=excluded.is_up_guaranteed, pool_group=excluded.pool_group",
+                (uid, int(pool_id), int(state["since_ssr"]), int(state.get("since_sr", 0)), int(state["total_draws"]),
+                 int(state["up_id"]), int(state["is_up_guaranteed"]), pool_group)
+            )
 
     def set_pool_up(self, uid, pool_id, up_id):
         """设置自选 UP 目标（支持角色自选与钥从神系映射，按 pool_id 物理隔离，杜绝串池）"""
@@ -1053,7 +1067,19 @@ class DrawService:
     # ==================== 抽卡核心业务调度 ====================
 
     def draw(self, ctx, uid, pool_id, dtype=10):
+        """Settle tickets, pity and awards together, including direct service calls."""
+        from operation_notifications import checkpoint_notifications, restore_notifications
+        checkpoint = checkpoint_notifications(ctx)
+        try:
+            with self.db.transaction():
+                return self._draw(ctx, uid, pool_id, dtype)
+        except BaseException:
+            restore_notifications(ctx, checkpoint)
+            raise
+
+    def _draw(self, ctx, uid, pool_id, dtype=10):
         """执行单抽或十连抽卡核心逻辑，返回封装好的全部下行帧"""
+        from inventory_service import InventoryService
         pool_id = int(pool_id)
         dtype = int(dtype)
         import game_cycles
@@ -1178,13 +1204,8 @@ class DrawService:
                     records_to_insert.append((uid, pool_id, pool_group, chosen_hero, 1, now))
 
                     # 角色解锁边界判定：已拥有则转碎片交库管，未拥有则 DrawService 自管入库
-                    exists = self.db.query("SELECT id FROM hero WHERE uid=? AND id=?", (uid, chosen_hero))
-                    if not exists:
+                    if InventoryService._unlock_single_hero(self.db, uid, chosen_hero, 300, now):
                         new_heroes += 1
-                        self.db.execute(
-                            "INSERT INTO hero (uid, id, level, star, exp, skill_list, unlock, update_ts) VALUES (?, ?, 1, 300, 0, '[]', 1, ?)",
-                            (uid, chosen_hero, now)
-                        )
                         try:
                             import event_bus
                             event_bus.bus.emit(event_bus.Events.HERO_UNLOCK, ctx, uid, hero_id=chosen_hero)
@@ -1224,13 +1245,8 @@ class DrawService:
                         total_huimang += rebate
                         records_to_insert.append((uid, pool_id, pool_group, chosen_hero, 1, now))
 
-                        exists = self.db.query("SELECT id FROM hero WHERE uid=? AND id=?", (uid, chosen_hero))
-                        if not exists:
+                        if InventoryService._unlock_single_hero(self.db, uid, chosen_hero, 200, now):
                             new_heroes += 1
-                            self.db.execute(
-                                "INSERT INTO hero (uid, id, level, star, exp, skill_list, unlock, update_ts) VALUES (?, ?, 1, 200, 0, '[]', 1, ?)",
-                                (uid, chosen_hero, now)
-                            )
                             try:
                                 import event_bus
                                 event_bus.bus.emit(event_bus.Events.HERO_UNLOCK, ctx, uid, hero_id=chosen_hero)
@@ -1265,13 +1281,8 @@ class DrawService:
                             total_huimang += rebate
                             records_to_insert.append((uid, pool_id, pool_group, chosen_b, 1, now))
 
-                            exists = self.db.query("SELECT id FROM hero WHERE uid=? AND id=?", (uid, chosen_b))
-                            if not exists:
+                            if InventoryService._unlock_single_hero(self.db, uid, chosen_b, 100, now):
                                 new_heroes += 1
-                                self.db.execute(
-                                    "INSERT INTO hero (uid, id, level, star, exp, skill_list, unlock, update_ts) VALUES (?, ?, 1, 100, 0, '[]', 1, ?)",
-                                    (uid, chosen_b, now)
-                                )
                                 try:
                                     import event_bus
                                     event_bus.bus.emit(event_bus.Events.HERO_UNLOCK, ctx, uid, hero_id=chosen_b)
@@ -1309,27 +1320,21 @@ class DrawService:
             items_for_inventory.append((36, total_huimang))
 
         if items_for_inventory:
-            try:
-                import inventory_service
-                inventory_service.grant_items(ctx, uid, items_for_inventory, source="gacha")
-            except Exception as e:
-                logger.error(f"[DrawService] 移交 InventoryService 入库失败: {e}")
+            import inventory_service
+            inventory_service.grant_items(ctx, uid, items_for_inventory, source="gacha")
 
         # 持久化出卡次序与历史记录（保留最近 100 条）
         if self.db is not None and records_to_insert:
-            try:
-                for rec in records_to_insert:
-                    self.db.execute(
-                        "INSERT INTO draw_record (uid, pool_id, pool_group, item_id, item_num, draw_ts) VALUES (?, ?, ?, ?, ?, ?)",
-                        rec
-                    )
-                self.db.execute("""
-                    DELETE FROM draw_record WHERE id IN (
-                        SELECT id FROM draw_record WHERE uid=? AND pool_group=? ORDER BY id DESC LIMIT -1 OFFSET 100
-                    )
-                """, (uid, pool_group))
-            except Exception as e:
-                logger.warning(f"[DrawService] 保存 draw_record 异常: {e}")
+            for rec in records_to_insert:
+                self.db.execute(
+                    "INSERT INTO draw_record (uid, pool_id, pool_group, item_id, item_num, draw_ts) VALUES (?, ?, ?, ?, ?, ?)",
+                    rec
+                )
+            self.db.execute("""
+                DELETE FROM draw_record WHERE id IN (
+                    SELECT id FROM draw_record WHERE uid=? AND pool_group=? ORDER BY id DESC LIMIT -1 OFFSET 100
+                )
+            """, (uid, pool_group))
 
         # 广播抽卡业务事件（供日常任务等消费）
         try:
@@ -1403,15 +1408,11 @@ class DrawService:
         )
 
     def _grant_hero(self, uid, hero_id):
+        from inventory_service import InventoryService
         star = 300 if hero_id in (STANDARD_S_HEROES + LIMITED_S_HEROES) else 200
         piece_add = 30 if star >= 300 else 18
-        exists = self.db.query("SELECT id FROM hero WHERE uid=? AND id=?", (uid, hero_id))
         now = int(time.time())
-        if not exists:
-            self.db.execute(
-                "INSERT INTO hero (uid, id, level, star, exp, skill_list, unlock, update_ts) VALUES (?, ?, 1, ?, 0, '[]', 1, ?)",
-                (uid, hero_id, star, now)
-            )
+        if InventoryService._unlock_single_hero(self.db, uid, hero_id, star, now):
             try:
                 import event_bus
                 event_bus.bus.emit(event_bus.Events.HERO_UNLOCK, None, uid, hero_id=hero_id)

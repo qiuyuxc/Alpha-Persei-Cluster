@@ -1262,6 +1262,7 @@ class DrawOp(Operation):
 
     cmd = 16010
     sc = 16011
+    prepare_response_in_transaction = True
 
     def validate(self, data, ctx):
         pool_id = int(data.get("pool") or 0)
@@ -1289,17 +1290,16 @@ class DrawOp(Operation):
             "first_ssr_draw_flag": result.get("first_ssr_draw_flag", False),
             "newbie_choose_draw_flag": result.get("newbie_choose_draw_flag", True),
             "ssr_draw_times": result.get("ssr_draw_times", 0)
-        }) or b"\x08\x00"
-        frames = [DownFrame(self.sc, payload)] + _refresh_frames(ctx, self.uid)
+        })
+        if not payload:
+            raise ValueError("必要抽卡回执 sc_16011 为空")
+        frames = [DownFrame(self.sc, payload)] + _refresh_frames(ctx, self.uid, strict=True)
         if int(result.get("keyongs") or 0) > 0:
-            try:
-                import generator
-                servant_payload = generator.gen_payload(46011, uid=self.uid, db=ctx.db)
-                if servant_payload is None:
-                    raise RuntimeError("钥从列表生成失败")
-                frames.append(DownFrame(46011, servant_payload))
-            except Exception as exc:
-                ctx.log(f"[draw] 已提交抽卡的钥从刷新失败: {exc}", "WARN")
+            import generator
+            servant_payload = generator.gen_payload(46011, uid=self.uid, db=ctx.db)
+            if not servant_payload:
+                raise RuntimeError("钥从列表生成失败")
+            frames.append(DownFrame(46011, servant_payload))
         return frames
 
 
@@ -2987,8 +2987,8 @@ class SkillUpOp(Operation):
         from hero_service import HeroService
         svc = HeroService.get_instance(db=ctx.db)
         hid = int(data.get("hero_id") or 0)
-        sid = data.get("skill_id") or data.get("id")
-        num = int(data.get("num") or 1)
+        sid = data.get("skill_id", data.get("id"))
+        num = int(data.get("num", 1))
         return svc.upgrade_skill(ctx, self.uid, hid, sid, num=num)
 
     def respond(self, result, data, ctx):

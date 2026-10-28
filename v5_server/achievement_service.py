@@ -22,6 +22,7 @@ from codec import encode, decode
 from core import Operation, OperationError, operation
 from event_bus import bus, Events
 from middleware import DownFrame
+from operation_notifications import checkpoint_notifications, restore_notifications
 
 logger = logging.getLogger("achievement_service")
 
@@ -223,6 +224,17 @@ class AchievementService:
     # ------------------------------------------------------------------
 
     def claim_achievements(self, uid, aid_list, ctx=None):
+        """Own the transaction for direct callers; join Core's transaction otherwise."""
+        checkpoint = checkpoint_notifications(ctx) if ctx is not None else None
+        try:
+            with self.db.transaction():
+                return self._claim_achievements(uid, aid_list, ctx)
+        except BaseException:
+            if checkpoint is not None:
+                restore_notifications(ctx, checkpoint)
+            raise
+
+    def _claim_achievements(self, uid, aid_list, ctx=None):
         """
         领奖业务核心：
         支持单领 (GetReceiveReward) 与一键全领 (TryToSubmitAchievementList)。
@@ -233,9 +245,11 @@ class AchievementService:
         if not aid_list:
             return {"result": 0, "reward_list": [], "claimed_ids": []}
 
-        clean_ids = [int(x) for x in aid_list if int(x) in _CFG]
-        if not clean_ids:
-            return {"result": 0, "reward_list": [], "claimed_ids": []}
+        # sc_53005 has no claimed-ID field: a success acknowledges every ID
+        # submitted by the client. Validate the whole batch before writing.
+        clean_ids = list(dict.fromkeys(int(x) for x in aid_list))
+        if any(aid not in _CFG for aid in clean_ids):
+            raise OperationError(2, "成就编号不在当前配置中")
 
         placeholders = ",".join("?" for _ in clean_ids)
         rows = self.db.query(
@@ -250,7 +264,7 @@ class AchievementService:
         for aid in clean_ids:
             r = row_map.get(aid)
             if not r:
-                continue
+                raise OperationError(2, f"成就 {aid} 的记录不存在")
             # 已领过的跳过
             if int(r.get("complete_flag") or 0) == 1:
                 continue
@@ -258,7 +272,7 @@ class AchievementService:
             prog = int(r.get("progress") or 0)
             need = int(r.get("need") or 0)
             if prog < need:
-                continue
+                raise OperationError(2, f"成就 {aid} 尚未达成")
 
             valid_ids.append(aid)
             cfg_item = _CFG[aid]
@@ -1003,15 +1017,18 @@ class AchievementRewardOp(Operation):
     """
     cmd = 53004
     sc = 53005
+    prepare_response_in_transaction = True
 
     def validate(self, data, ctx):
         aid_data = data.get("id")
         if isinstance(aid_data, int):
             aid_list = [aid_data]
         elif isinstance(aid_data, (list, tuple)):
-            aid_list = [int(x) for x in aid_data if int(x) > 0]
+            aid_list = [int(x) for x in aid_data]
         else:
             aid_list = []
+        if any(aid <= 0 for aid in aid_list):
+            raise OperationError(2, "成就编号必须大于 0")
         data["_aid_list"] = aid_list
         return data
 
@@ -1026,18 +1043,19 @@ class AchievementRewardOp(Operation):
 
         # 1. 优先下发变动货币的原子差量帧 sc_17023 (移转之辉 1 与成就点 33)
         if hasattr(ctx, "touched_items") and ctx.touched_items:
-            try:
-                p_17023 = _gen.gen_payload(17023, uid=self.uid, db=ctx.db, touched_items=ctx.touched_items)
-                if p_17023:
-                    out.append(DownFrame(17023, p_17023))
-            except Exception as e:
-                logger.warning(f"生成成就 sc_17023 异常: {e}")
+            p_17023 = _gen.gen_payload(17023, uid=self.uid, db=ctx.db,
+                                      touched_items=ctx.touched_items, strict=True)
+            if not p_17023:
+                raise ValueError("必要成就资产刷新 sc_17023 为空")
+            out.append(DownFrame(17023, p_17023))
 
         # 2. 响应业务确认帧 sc_53005
         p_53005 = ctx.codec_encode("sc_53005", {
             "result": 0,
             "reward_list": result.get("reward_list", [])
-        }) or b"\x08\x00"
+        })
+        if not p_53005:
+            raise ValueError("必要成就回执 sc_53005 为空")
         out.append(DownFrame(self.sc, p_53005))
 
         ctx.log(f"cs_53004 -> 领取成就奖励 uid={self.uid} claimed={len(result.get('claimed_ids', []))}项")

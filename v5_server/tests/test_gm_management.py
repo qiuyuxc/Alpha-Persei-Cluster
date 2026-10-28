@@ -250,7 +250,9 @@ class ManagementTests(unittest.TestCase):
         self.db.execute('UPDATE draw_pool SET detail_json=? WHERE pool_id=5030601', (custom,))
         service._init_db_schema()
         self.assertEqual(self.db.query('SELECT detail_json FROM draw_pool WHERE pool_id=5030601')[0]['detail_json'], custom)
-        self.assertEqual(self.db.query('SELECT * FROM draw_state WHERE uid=? AND pool_id=5030601', (UID,)), saved)
+        migrated = self.db.query('SELECT * FROM draw_state WHERE uid=? AND pool_id=5030601', (UID,))
+        self.assertEqual([{key: row[key] for key in saved[0]} for row in migrated], saved)
+        self.assertEqual(migrated[0]['since_sr'], 0)
 
     def test_anchor_choice_draw_uses_selected_hero_and_charges_once(self):
         import core

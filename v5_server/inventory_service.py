@@ -739,13 +739,7 @@ class InventoryService:
         star = int(cfg[0]["unlock_star"]) if cfg and cfg[0].get("unlock_star") else 300
         piece_add = 30 if star >= 300 else (18 if star == 200 else 10)
 
-        exists = db.query("SELECT id FROM hero WHERE uid=? AND id=?", (uid, hero_id))
-        if not exists:
-            db.execute(
-                "INSERT INTO hero (uid, id, level, star, exp, skill_list, unlock, update_ts) "
-                "VALUES (?, ?, 1, ?, 0, '[]', 1, ?)",
-                (uid, hero_id, star, now_ts),
-            )
+        if cls._unlock_single_hero(db, uid, hero_id, star, now_ts):
             return True, False, hero_id, 0
         else:
             prow = db.query("SELECT num FROM hero_piece WHERE uid=? AND hero_id=?", (uid, hero_id))
@@ -757,6 +751,20 @@ class InventoryService:
                 (uid, hero_id, new_cnt),
             )
             return False, True, hero_id, piece_add
+
+    @classmethod
+    def _unlock_single_hero(cls, db, uid, hero_id, star, now_ts):
+        """Ownership uses unlock=1; preserve growth when unlocking an old row."""
+        rows = db.query("SELECT unlock FROM hero WHERE uid=? AND id=?", (uid, hero_id))
+        if rows and int(rows[0].get("unlock") or 0) == 1:
+            return False
+        db.execute(
+            "INSERT INTO hero (uid, id, level, star, exp, skill_list, unlock, update_ts) "
+            "VALUES (?, ?, 1, ?, 0, '[]', 1, ?) "
+            "ON CONFLICT(uid, id) DO UPDATE SET unlock=1, update_ts=excluded.update_ts",
+            (uid, hero_id, star, now_ts),
+        )
+        return True
 
     @classmethod
     def _grant_equips_batch(cls, ctx, db, uid, equip_items, now_ts):

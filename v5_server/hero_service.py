@@ -687,8 +687,10 @@ class HeroService:
         curve_rows = db.query("SELECT level, hero_exp_need FROM game_level_setting")
         curve = {r["level"]: r["hero_exp_need"] for r in curve_rows} if curve_rows else {}
 
-        # 1. 突破列表执行
+        # Plan the target before spending anything: an old/lower target must
+        # never turn already owned experience into refundable materials.
         breaks_done = 0
+        break_costs = []
         for _ in (break_list or []):
             if cur_break >= 8:
                 break
@@ -696,15 +698,7 @@ class HeroService:
             bcfg = db.query("SELECT * FROM hero_break_cfg WHERE id=?", (cfg_id,))
             if not bcfg:
                 break
-            c = bcfg[0]
-            if c.get("cost_gold"):
-                self._deduct_item(ctx, uid, 2, int(c["cost_gold"]))
-            try:
-                costs = json.loads(c.get("cost") or "[]")
-            except Exception:
-                costs = []
-            for iid, num in costs:
-                self._deduct_item(ctx, uid, int(iid), int(num))
+            break_costs.append(bcfg[0])
             cur_break += 1
             breaks_done += 1
 
@@ -715,10 +709,13 @@ class HeroService:
             final_target_lv = stage_max_lv
 
         max_exp = level_to_exp(final_target_lv, curve)
+        if final_target_lv < cur_level or max_exp < cur_exp:
+            raise OperationError(2, "目标等级不能低于角色当前等级或已有经验")
 
-        # 2. 扣除经验道具
+        # Calculate the result before charging break or experience materials.
         items = item_list or material_list or []
         raw_exp_add = 0
+        exp_costs = []
         for it in items:
             if isinstance(it, (list, tuple)) and len(it) >= 2:
                 iid = int(it[0])
@@ -731,7 +728,7 @@ class HeroService:
             if iid not in EXP_ITEMS or num <= 0:
                 continue
             raw_exp_add += EXP_ITEMS[iid] * num
-            self._deduct_item(ctx, uid, iid, num)
+            exp_costs.append((iid, num))
 
         # 3. 计算经验与溢出返还
         potential_exp = cur_exp + raw_exp_add
@@ -743,6 +740,20 @@ class HeroService:
             cut_exp = 0
 
         final_level = exp_to_level(final_exp, curve, final_target_lv)
+        if final_level < cur_level:
+            raise OperationError(2, "升级后的等级不能低于角色当前等级")
+
+        for c in break_costs:
+            if c.get("cost_gold"):
+                self._deduct_item(ctx, uid, 2, int(c["cost_gold"]))
+            try:
+                costs = json.loads(c.get("cost") or "[]")
+            except Exception:
+                costs = []
+            for iid, num in costs:
+                self._deduct_item(ctx, uid, int(iid), int(num))
+        for iid, num in exp_costs:
+            self._deduct_item(ctx, uid, iid, num)
 
         refund_items = []
         if cut_exp > 0:
@@ -842,12 +853,18 @@ class HeroService:
         except Exception:
             skills = []
 
+        from hero_codec import _configured_hero_skills
+        configured_skills = _configured_hero_skills(hid)
         sid = int(skill_id) if skill_id is not None else None
-        num = max(1, int(num or 1))
+        if not configured_skills or (sid is not None and sid not in configured_skills):
+            raise OperationError(2, f"技能 {sid} 不属于英雄 {hid} 的技能配置")
+        num = int(num)
+        if num <= 0:
+            raise OperationError(2, "技能升级次数必须大于 0")
         idx = None
 
         for i, s in enumerate(skills):
-            if sid is not None and s[0] == sid:
+            if isinstance(s, list) and len(s) >= 2 and sid is not None and s[0] == sid:
                 idx = i
                 break
         if idx is None and sid is not None:
@@ -855,18 +872,23 @@ class HeroService:
             idx = len(skills) - 1
         if idx is None:
             for i, s in enumerate(skills):
-                if isinstance(s, list) and len(s) >= 2 and (s[1] or 0) < SKILL_MAX_LV:
+                if (isinstance(s, list) and len(s) >= 2 and s[0] in configured_skills
+                        and (s[1] or 0) < SKILL_MAX_LV):
                     idx = i
                     break
         if idx is None:
             raise OperationError(2, "无可升级技能")
 
-        cur_lv = skills[idx][1] or 1
+        cur_lv = int(skills[idx][1] or 1)
         if cur_lv >= SKILL_MAX_LV:
             raise OperationError(2, f"技能已达满级({SKILL_MAX_LV})")
 
-        new_lv = min(SKILL_MAX_LV, cur_lv + num)
-        slot = min(5, max(1, idx + 1))
+        # sc_14031 carries only result; the client increments by the requested
+        # num. Reject a partial upgrade instead of acknowledging a clipped one.
+        new_lv = cur_lv + num
+        if new_lv > SKILL_MAX_LV:
+            raise OperationError(2, f"技能升级超过等级上限({SKILL_MAX_LV})")
+        slot = min(5, configured_skills.index(skills[idx][0]) + 1)
         total_factor = 0
         for lv in range(cur_lv, new_lv):
             total_factor += SKILL_COSTS.get(lv, {}).get(slot, 1)
@@ -900,7 +922,9 @@ class HeroService:
         db = getattr(ctx, "db", self.db)
         hid = int(hero_id)
         idx = int(index)
-        num = max(1, int(num or 1))
+        num = int(num)
+        if num <= 0:
+            raise OperationError(2, "属性强化次数必须大于 0")
         if not (1 <= idx <= 5):
             raise OperationError(2, f"index 越界: {idx}")
 
@@ -921,7 +945,9 @@ class HeroService:
         if cur >= ATTR_MAX_LV:
             raise OperationError(2, f"属性强化已满级({ATTR_MAX_LV})")
 
-        targets = list(range(cur + 1, min(cur + num, ATTR_MAX_LV) + 1))
+        if cur + num > ATTR_MAX_LV:
+            raise OperationError(2, f"属性强化超过等级上限({ATTR_MAX_LV})")
+        targets = list(range(cur + 1, cur + num + 1))
         if not targets:
             raise OperationError(2, "无可升级的等级")
 
