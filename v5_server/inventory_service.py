@@ -87,6 +87,22 @@ def _get_drop_cfg():
     return _DROP_CFG_CACHE
 
 
+def _get_random_box_pool(item_id, param):
+    """Subtype 502 params describe an item type and rarity, not a reward pair."""
+    from client_rule_loader import load_rules
+    from core import OperationError
+
+    boxes = load_rules('item_random_box_rules.json').get('boxes')
+    row = boxes.get(str(item_id)) if isinstance(boxes, dict) else None
+    pool = row.get('item_ids') if isinstance(row, dict) else None
+    if (not isinstance(row, dict) or row.get('param') != param
+            or not isinstance(pool, list) or not pool
+            or any(type(iid) is not int or iid <= 0 for iid in pool)
+            or len(set(pool)) != len(pool)):
+        raise OperationError(406, f'随机箱奖池缺失或无效: id={item_id}')
+    return pool
+
+
 _ITEM_EXCHANGE_CFG_CACHE = None
 
 
@@ -997,16 +1013,26 @@ class InventoryService:
             if count <= 0 or iid <= 0:
                 continue
 
-            # 扣除道具
+            cfg = usable_cfgs.get(str(iid))
+            if not isinstance(cfg, dict):
+                from core import OperationError
+                raise OperationError(406, f"道具使用配置缺失: id={iid}")
+            param = cfg.get("param")
+            sub_type = int(cfg.get("sub_type") or 0)
+            itype = int(cfg.get("type") or 0)
+
+            random_pool = None
+            if sub_type == 502:
+                if use_choices:
+                    from core import OperationError
+                    raise OperationError(2, f"随机箱不能指定自选项: id={iid}")
+                random_pool = _get_random_box_pool(iid, param)
+
+            # 先校验配置；执行中任一失败由整批保存点恢复。
             succ = cls.cost_item(ctx, uid, iid, count=count)
             if not succ:
                 from core import OperationError
                 raise OperationError(3, f"道具不足: id={iid} 需{count}")
-
-            cfg = usable_cfgs.get(str(iid))
-            param = cfg.get("param") if cfg else None
-            sub_type = int(cfg.get("sub_type") or 0) if cfg else 0
-            itype = int(cfg.get("type") or 0) if cfg else 0
 
             # 特殊功能道具: 黑区信标 (41101)
             if iid == 41101:
@@ -1014,8 +1040,15 @@ class InventoryService:
                     db.reset_mythic_by_beacon(uid)
                 continue
 
+            # 随机类型/稀有度箱：每个箱子独立抽出一件，不把 [type, rare] 当 [id, num]。
+            if random_pool is not None:
+                for _ in range(count):
+                    reward_id = random.choice(random_pool)
+                    all_items_to_grant.append((reward_id, 1))
+                    raw_drops.append({"id": reward_id, "num": 1, "time_valid": 0})
+
             # 分支 1: 自选箱 (use_choices 存在，或 sub_type 为 504, 508, 514, 515, 516, 517)
-            if (use_choices or sub_type in (504, 508, 514, 515, 516, 517)) and param and isinstance(param, list):
+            elif (use_choices or sub_type in (504, 508, 514, 515, 516, 517)) and param and isinstance(param, list):
                 # 若客户端未上报选择索引，默认选取第 1 项避免越界穿透至全部发放
                 choices = use_choices if use_choices else [1]
                 for choice_idx in choices:
