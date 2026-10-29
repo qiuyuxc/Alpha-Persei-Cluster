@@ -141,9 +141,13 @@ def settle_fatigue(db, uid, now_ts=None):
             )
             return cur_num, now_ts
 
-        # 3. 时钟回拨保护
+        # 3. 时钟回拨后写回新的起点，避免后续结算仍被未来时间阻塞。
         if last_recover_time > now_ts:
-            last_recover_time = now_ts
+            db.execute(
+                "UPDATE currency SET last_fatigue_recover_time=?, update_ts=? WHERE uid=? AND id=4",
+                (now_ts, now_ts, uid)
+            )
+            return cur_num, now_ts
 
         elapsed = max(0, now_ts - last_recover_time)
         recover_points = elapsed // RECOVER_INTERVAL_SEC
@@ -251,9 +255,9 @@ def on_fatigue_grant(db, uid, add_amount, now_ts=None):
 
 def check_and_push_fatigue(conn, uid, db, codec_encode):
     """
-    在线挂机主动推送器（仅当体力未满且达到 360 秒周期时触发）：
+    在线挂机主动推送器（体力未满时结算恢复或纠正未来的计时起点）：
     1. 快速检查体力是否未满（若满则 0 耗时瞬间返回）；
-    2. 若未满且时间已过 360 秒，触发 settle_fatigue 自然回体；
+    2. 未来起点写回当前时间并只推送计时帧；时间已过 360 秒则结算自然回体；
     3. 采用专属原子差量帧：sc_17023 (数值) + sc_17025 (时间戳)，彻底废除 15009 全量包！
     """
     if not conn or not uid or not db or not codec_encode:
@@ -274,6 +278,14 @@ def check_and_push_fatigue(conn, uid, db, codec_encode):
         now_ts = int(time.time())
         if last_recover_time <= 0:
             settle_fatigue(db, uid, now_ts=now_ts)
+            return False
+        if last_recover_time > now_ts:
+            new_num, new_last_time = settle_fatigue(db, uid, now_ts=now_ts)
+            if new_num == cur_num and new_last_time == now_ts and hasattr(conn, "send_push"):
+                payload = codec_encode("sc_17025", {"last_fatigue_recover_time": new_last_time})
+                if payload:
+                    conn.send_push(17025, payload)
+                    return True
             return False
         if now_ts - last_recover_time < RECOVER_INTERVAL_SEC:
             return False

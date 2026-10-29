@@ -621,6 +621,23 @@ def fetch_upstream(host, path, query="", headers=None, method="GET", body=None, 
     return 502, {}, b""
 
 
+def _configured_resource_route(path, platform, filename):
+    paths = (f"/{platform}/resources/{filename}",
+             f"/patches/{platform}/resources/{filename}")
+    if path.split("?", 1)[0] not in paths or not re.fullmatch(
+            r"(?:[0-9a-fA-F]{32}\.ys|[A-Za-z0-9_.-]+\.bytes)", filename):
+        return None
+    import res_version_manager
+    config = res_version_manager.get_version_config()
+    platforms = config.get("resource_local_bundles", {})
+    bundles = platforms.get(platform) if isinstance(platforms, dict) else None
+    if not isinstance(bundles, list):
+        return None
+    if filename in bundles or filename == config.get("assethash", {}).get(platform):
+        return "local"
+    return f"https://download-eo.ys4fun.com/{platform}/resources/{filename}"
+
+
 def handle_resource_request(path, host="download-eo.ys4fun.com", query="", headers=None, log=_logger_log):
     r"""
     统一资源调度网关（严格平台隔离）：
@@ -633,6 +650,14 @@ def handle_resource_request(path, host="download-eo.ys4fun.com", query="", heade
     except ValueError as error:
         return Response(str(error), status=400, mimetype="text/plain")
     range_hdr = headers.get("Range") if headers else None
+
+    route = _configured_resource_route(path, platform, fn)
+    if route and route != "local":
+        response = Response("", status=302)
+        response.headers["Location"] = route
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
 
     # 1. 查找本地缓存（优先该平台目录）
     cached = find_cached_file(fn, platform=platform)
@@ -650,6 +675,8 @@ def handle_resource_request(path, host="download-eo.ys4fun.com", query="", heade
         return serve_local_stream(cached, range_header=range_hdr)
 
     # 2. 本地不存在或需要实时抓包，启动流式双向转发
+    if route == "local":
+        return Response("Not Found", status=404)
     if _CAPTURE_ENABLED or _AUTO_CACHE_FALLBACK:
         upstream_host = host if ("download" in host) else "download-eo.ys4fun.com"
         return stream_upstream_and_cache(path, host=upstream_host, query=query,

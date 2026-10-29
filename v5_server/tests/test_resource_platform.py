@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -101,6 +102,23 @@ class ResourcePlatformTests(unittest.TestCase):
         self.assertEqual(response["data"]["platformType"], "android")
         self.assert_platform(self.update(query_string={"platformType": "android", "channelId": 7}), "android")
 
+    def test_custom_android_resource_download_url_is_returned(self):
+        urls = ("https://cloud.example/patches/android/resources/;"
+                "https://download-eo.ys4fun.com/android/resources/;"
+                "https://download.ys4fun.com/android/resources/")
+        self.versions.VERSION_CONFIGS["321"]["resource_download_urls"] = {"android": urls}
+        response = self.update(query_string={"platformType": "android"})
+        self.assert_platform(response, "android")
+        patch_info = next(item for item in response["data"] if item["type"] == "noInstall")
+        self.assertEqual(patch_info["downloadUrl"], urls)
+        for platform in ("ios", "pc"):
+            response = self.update(query_string={"platformType": platform})
+            self.assert_platform(response, platform)
+            patch_info = next(item for item in response["data"] if item["type"] == "noInstall")
+            self.assertEqual(patch_info["downloadUrl"],
+                "https://download-eo.ys4fun.com/" + platform + "/resources/;"
+                "https://download.ys4fun.com/" + platform + "/resources/")
+
     def test_unknown_client_is_not_assigned_previous_platform(self):
         self.assert_platform(self.update(query_string={"platformType": "ios"}), "ios")
         result = self.update(headers={"User-Agent": "UnityPlayer/2021.3.0f1"})
@@ -163,6 +181,112 @@ class ResourcePlatformTests(unittest.TestCase):
     def test_ambiguous_resource_request_is_rejected_before_network(self):
         response = self.cdn.handle_resource_request("/resources/asset.bundle", headers={"User-Agent": "UnityPlayer/1"})
         self.assertEqual(response.status_code, 400)
+
+    def test_missing_official_asset_redirects_from_patch_and_legacy_urls(self):
+        self.versions.VERSION_CONFIGS["321"]["resource_local_bundles"] = {"android": []}
+        filename = "a" * 32 + ".ys"
+        with patch.object(self.cdn, "_CAPTURE_ENABLED", False), \
+                patch.object(self.cdn, "_AUTO_CACHE_FALLBACK", False), \
+                patch.object(self.cdn, "find_cached_file") as lookup, \
+                patch.object(self.cdn, "stream_upstream_and_cache") as fetch:
+            for prefix in ("/patches/android/resources/", "/android/resources/"):
+                response = self.client.get(prefix + filename + "?token=private",
+                    headers={"Host": "download.untrusted.example", "Range": "bytes=0-63",
+                             "Cookie": "session=private", "Authorization": "Bearer private"})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response.headers["Location"],
+                    "https://download-eo.ys4fun.com/android/resources/" + filename)
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertEqual(response.get_data(), b"")
+        lookup.assert_not_called()
+        fetch.assert_not_called()
+
+    def test_unconfigured_resource_routes_keep_local_only_behavior(self):
+        with patch.object(self.cdn, "_CAPTURE_ENABLED", False), \
+                patch.object(self.cdn, "_AUTO_CACHE_FALLBACK", False), \
+                patch.object(self.cdn, "find_cached_file", return_value=None), \
+                patch.object(self.cdn, "stream_upstream_and_cache") as fetch:
+            response = self.cdn.handle_resource_request("/android/resources/" + "a" * 32 + ".ys")
+        self.assertEqual(response.status_code, 404)
+        fetch.assert_not_called()
+
+    def test_android_patch_routes_do_not_redirect_other_platforms_or_arbitrary_paths(self):
+        self.versions.VERSION_CONFIGS["321"]["resource_local_bundles"] = {"android": []}
+        with patch.object(self.cdn, "_CAPTURE_ENABLED", False), \
+                patch.object(self.cdn, "_AUTO_CACHE_FALLBACK", False), \
+                patch.object(self.cdn, "find_cached_file", return_value=None), \
+                patch.object(self.cdn, "stream_upstream_and_cache") as fetch:
+            for path in ("/ios/resources/" + "a" * 32 + ".ys", "/pc/resources/" + "a" * 32 + ".ys",
+                         "/android/resources/arbitrary.ys", "/android/resources/config.json",
+                         "/android/resources/nested/" + "a" * 32 + ".ys",
+                         "/other/android/resources/" + "a" * 32 + ".ys"):
+                self.assertEqual(self.cdn.handle_resource_request(path).status_code, 404)
+        fetch.assert_not_called()
+
+    def test_cached_official_images_also_download_directly_from_official_cdn(self):
+        self.versions.VERSION_CONFIGS["321"]["resource_local_bundles"] = {"android": []}
+        cached = self.root / ("a" * 32 + ".ys")
+        cached.write_bytes(b"cached-image")
+        with patch.object(self.cdn, "find_cached_file", return_value=str(cached)) as lookup, \
+                patch.object(self.cdn, "stream_upstream_and_cache") as fetch:
+            response = self.cdn.handle_resource_request("/android/resources/" + cached.name)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"],
+            "https://download-eo.ys4fun.com/android/resources/" + cached.name)
+        lookup.assert_not_called()
+        fetch.assert_not_called()
+
+    def test_local_manifest_and_both_script_bundles_use_patch_and_legacy_paths(self):
+        bodies = {}
+        for body in (b"patched script FR1", b"patched script FR2"):
+            bodies[hashlib.md5(body).hexdigest() + ".ys"] = body
+        config = self.versions.VERSION_CONFIGS["321"]
+        config["resource_local_bundles"] = {"android": list(bodies)}
+        manifest_name = config["assethash"]["android"]
+        bodies[manifest_name] = b"patched manifest"
+        for name, body in bodies.items():
+            (self.root / name).write_bytes(body)
+        with patch.object(self.cdn, "_CAPTURE_ENABLED", False), \
+                patch.object(self.cdn, "_AUTO_CACHE_FALLBACK", False), \
+                patch.object(self.cdn, "find_cached_file",
+                    side_effect=lambda name, platform: str(self.root / name)), \
+                patch.object(self.cdn, "stream_upstream_and_cache") as fetch:
+            for prefix in ("/patches/android/resources/", "/android/resources/"):
+                for name, body in bodies.items():
+                    response = self.client.get(prefix + name)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.get_data(), body)
+                    response = self.client.get(prefix + name, headers={"Range": "bytes=1-4"})
+                    self.assertEqual(response.status_code, 206)
+                    self.assertEqual(response.get_data(), body[1:5])
+                    self.assertEqual(response.headers["Content-Range"], "bytes 1-4/" + str(len(body)))
+        fetch.assert_not_called()
+
+    def test_missing_local_patch_never_redirects_or_fetches_official_copy(self):
+        filename = "a" * 32 + ".ys"
+        config = self.versions.VERSION_CONFIGS["321"]
+        config["resource_local_bundles"] = {"android": [filename]}
+        with patch.object(self.cdn, "_CAPTURE_ENABLED", True), \
+                patch.object(self.cdn, "_AUTO_CACHE_FALLBACK", True), \
+                patch.object(self.cdn, "find_cached_file", return_value=None), \
+                patch.object(self.cdn, "stream_upstream_and_cache") as fetch:
+            for name in (filename, config["assethash"]["android"]):
+                response = self.client.get("/patches/android/resources/" + name)
+                self.assertEqual(response.status_code, 404)
+                self.assertNotIn("Location", response.headers)
+        fetch.assert_not_called()
+
+    def test_invalid_patch_route_config_does_not_enable_redirects(self):
+        with patch.object(self.cdn, "_CAPTURE_ENABLED", False), \
+                patch.object(self.cdn, "_AUTO_CACHE_FALLBACK", False), \
+                patch.object(self.cdn, "find_cached_file", return_value=None), \
+                patch.object(self.cdn, "stream_upstream_and_cache") as fetch:
+            for platforms in (["android"], {"android": True}, {"android": "all"}):
+                self.versions.VERSION_CONFIGS["321"]["resource_local_bundles"] = platforms
+                response = self.cdn.handle_resource_request("/patches/android/resources/" + "a" * 32 + ".ys")
+                self.assertEqual(response.status_code, 404)
+        fetch.assert_not_called()
+        fetch.assert_not_called()
 
 
 if __name__ == "__main__":

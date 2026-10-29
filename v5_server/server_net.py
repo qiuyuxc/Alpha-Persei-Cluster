@@ -1409,7 +1409,7 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
                             "forceUpdate": False,
                             "fileSize": 0,
                             "disDate": int(time.time() * 1000),
-                            "downloadUrl": f"https://download-eo.ys4fun.com/{cur_plat}/resources/;https://download.ys4fun.com/{cur_plat}/resources/",
+                            "downloadUrl": ver_cfg.get("resource_download_urls", {}).get(cur_plat) or f"https://download-eo.ys4fun.com/{cur_plat}/resources/;https://download.ys4fun.com/{cur_plat}/resources/",
                             "extraData": json.dumps({"assethash": chosen_assethash}),
                             "platformType": cur_plat,
                             "enableWhiteList": False,

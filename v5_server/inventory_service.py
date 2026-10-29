@@ -1245,7 +1245,9 @@ class InventoryService:
                     pieces = conv["pieces"]
                     piece_id = 10000 + hid
                     if hid in merged_drops:
-                        del merged_drops[hid]
+                        merged_drops[hid] -= 1
+                        if merged_drops[hid] <= 0:
+                            del merged_drops[hid]
                     merged_drops[piece_id] = merged_drops.get(piece_id, 0) + pieces
 
         final_drop_list = [

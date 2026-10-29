@@ -1711,14 +1711,17 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
         # 加载插画图集库驱动 → sc_52021 id_list (loading_set 表)
         import json as _j21
         row = db.query("SELECT id_list FROM loading_set WHERE uid=?", (uid,))
-        ids = []
+        ids = None
         if row and row[0]["id_list"]:
             try:
-                ids = _j21.loads(row[0]["id_list"]) if isinstance(row[0]["id_list"], str) else row[0]["id_list"]
-            except Exception:
-                ids = []
-        if not ids and not is_fresh(db, uid):
-            ids = [2109401, 2109403, 2109402]
+                saved = _j21.loads(row[0]["id_list"]) if isinstance(row[0]["id_list"], str) else row[0]["id_list"]
+                if isinstance(saved, list):
+                    ids = saved
+            except (ValueError, TypeError):
+                pass
+        # [] 是玩家主动清空的设置；只有缺失或损坏的设置才使用旧默认值。
+        if ids is None:
+            ids = [] if is_fresh(db, uid) else [2109401, 2109403, 2109402]
         return encode("sc_52021", {"id_list": [int(x) for x in ids]})
     if cmd == 52025:
         # 英雄种族收集进度库驱动 → sc_52025 hero_race_collect (hero_race_collect 表)
