@@ -461,42 +461,82 @@ class TrustService:
         return {"hero_id": hero_id, "tier": tier, "group_index": group_index, "node_id": node_id, "already": False}
 
     def exchange_trust_item(self, ctx, uid, use_item_list, reward_item_list):
-        """73010: 置换好感度礼物（客户端每日限次 hero_trust_exchange_up_limit 的服务端强制版）
+        """Validate the complete client conversion and own its SQL/notification outcome."""
+        from operation_notifications import operation_transaction
+        with operation_transaction(ctx):
+            return self._exchange_trust_item(ctx, uid, use_item_list, reward_item_list)
 
-        限次按「目标礼物 item_id」当日累计（与客户端 UpdateTrustGiftDisplaceCount 同口径），
-        超限拒绝（客户端对应 ShowTips HERO_TRUST_DISPLACE_UP_LIMIT），防重登绕过限次。
-        """
+    def _exchange_rules(self):
+        from client_rule_loader import load_rules
+        from core import OperationError
+        from game_cycles import integer
+        raw = load_rules('trust_exchange_rules.json')
+        try:
+            sources = {integer(value, '成本礼物', 1) for value in raw['cost_item_ids']}
+            targets = {integer(iid, '目标礼物', 1): {
+                'cost_units': integer(row['cost_units'], '兑换比例', 1),
+                'daily_limit': integer(row['daily_limit'], '每日限额', 1)}
+                for iid, row in raw['target_items'].items()}
+            if not sources or not targets or sources & set(targets):
+                raise ValueError('invalid gift categories')
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise OperationError(406, '服务端礼物置换规则无效') from error
+        return sources, targets
+
+    def _exchange_trust_item(self, ctx, uid, use_item_list, reward_item_list):
         from operations import _item_deduct, _item_add
+        from core import OperationError
+        from game_cycles import integer
+        from inventory_service import get_item_balance
+        source_ids, targets = self._exchange_rules()
+
+        def aggregate(entries, allowed, label):
+            if not isinstance(entries, (list, tuple)) or not entries:
+                raise OperationError(2, label + '不能为空')
+            counts = {}
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise OperationError(2, label + '格式无效')
+                try:
+                    iid = integer(entry.get('id'), label + '编号', 1)
+                    num = integer(entry.get('num'), label + '数量', 1)
+                except ValueError as error:
+                    raise OperationError(2, str(error)) from error
+                if iid not in allowed:
+                    raise OperationError(2, label + '不在当前置换配置中')
+                counts[iid] = counts.get(iid, 0) + num
+            return counts
+
+        costs = aggregate(use_item_list, source_ids, '成本礼物')
+        rewards = aggregate(reward_item_list, targets, '目标礼物')
+        needed = sum(targets[iid]['cost_units'] * num for iid, num in rewards.items())
+        if sum(costs.values()) != needed:
+            raise OperationError(2, '成本礼物总数与目标礼物兑换比例不符')
+
+        # Read eligibility and persist counts within the same owning transaction.
+        self.trust_displace_limit = {iid: row['daily_limit'] for iid, row in targets.items()}
 
         # 门禁: 每日限次校验（仅配置了限次的礼物参与判定）
         day_key = self._displace_day_key()
         used_map = self._get_displace_used(ctx.db, uid, day_key)
-        for it in reward_item_list:
-            iid = int(it.get("id") or 0)
-            num = int(it.get("num") or 0)
-            limit = self.trust_displace_limit.get(iid)
-            if iid and num > 0 and limit is not None:
-                cur = used_map.get(iid, 0)
-                if cur + num > limit:
-                    raise ValueError(f"礼物 {iid} 今日置换次数已达上限({cur}/{limit})，次日 5 点刷新")
+        for iid, num in rewards.items():
+            cur, limit = used_map.get(iid, 0), targets[iid]['daily_limit']
+            if cur < 0 or cur + num > limit:
+                raise OperationError(2, f"礼物 {iid} 今日置换次数已达上限({cur}/{limit})，次日 5 点刷新")
+        for iid, num in costs.items():
+            _, have = get_item_balance(ctx, uid, iid)
+            if have < num:
+                raise OperationError(3, f'成本礼物不足: {iid} 需{num} 有{have}')
 
-        for it in use_item_list:
-            iid = int(it.get("id") or 0)
-            num = int(it.get("num") or 0)
-            if iid and num:
-                _item_deduct(ctx, uid, iid, num)
-        for it in reward_item_list:
-            iid = int(it.get("id") or 0)
-            num = int(it.get("num") or 0)
-            if iid and num:
-                _item_add(ctx, uid, iid, num)
-                # 限次礼物累计当日已用量
-                if self.trust_displace_limit.get(iid) is not None:
-                    ctx.db.execute(
-                        "INSERT INTO trust_displace_counter (uid, item_id, day_key, use) VALUES (?, ?, ?, ?) "
-                        "ON CONFLICT(uid, item_id, day_key) DO UPDATE SET use = use + excluded.use",
-                        (uid, iid, day_key, num)
-                    )
+        for iid, num in costs.items():
+            _item_deduct(ctx, uid, iid, num)
+        for iid, num in rewards.items():
+            _item_add(ctx, uid, iid, num)
+            ctx.db.execute(
+                "INSERT INTO trust_displace_counter (uid, item_id, day_key, use) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(uid, item_id, day_key) DO UPDATE SET use = use + excluded.use",
+                (uid, iid, day_key, num)
+            )
         return {}
 
     def _displace_day_key(self, now_ts=None):

@@ -21,12 +21,14 @@ import os
 import sys
 import json
 import threading
+from contextlib import contextmanager
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from operation_notifications import (
     checkpoint_notifications, restore_notifications,
     clear_instance_deletions, take_pending_frames,
+    operation_transaction,
 )
 
 import middleware as _mw  # noqa: E402
@@ -47,9 +49,9 @@ class CoreRequest:
     idx/srv 由 SERVER NET 分配，CORE 不碰（传输计数，老大定稿）。
     """
 
-    __slots__ = ("cmd", "payload", "uid", "seq", "index", "server_idx", "body")
+    __slots__ = ("cmd", "payload", "uid", "seq", "index", "server_idx", "body", "frame_packer")
 
-    def __init__(self, cmd, payload=b"", uid=0, seq=0, index=0, server_idx=0, body=None):
+    def __init__(self, cmd, payload=b"", uid=0, seq=0, index=0, server_idx=0, body=None, frame_packer=None):
         self.cmd = cmd
         self.payload = payload or b""
         self.uid = uid
@@ -57,10 +59,11 @@ class CoreRequest:
         self.index = index
         self.server_idx = server_idx
         self.body = body
+        self.frame_packer = frame_packer
 
     def to_cs_request(self):
         """转 CSRequest（middleware 调度用）。"""
-        return CSRequest(self.cmd, self.payload, self.index, self.server_idx, self.uid, self.body)
+        return CSRequest(self.cmd, self.payload, self.index, self.server_idx, self.uid, self.body, self.frame_packer)
 
 
 class CoreResponse:
@@ -71,12 +74,14 @@ class CoreResponse:
     src:    数据源标识 ('dynamic'|'skeleton'|'template'|'replay'|'drop'|'ack0')
     """
 
-    __slots__ = ("frames", "reply", "src")
+    __slots__ = ("frames", "reply", "src", "wire_bytes", "close_connection")
 
-    def __init__(self, frames=None, reply=True, src="dynamic"):
+    def __init__(self, frames=None, reply=True, src="dynamic", wire_bytes=None, close_connection=False):
         self.frames = list(frames or [])
         self.reply = reply
         self.src = src
+        self.wire_bytes = wire_bytes
+        self.close_connection = close_connection
 
     @classmethod
     def from_cs_response(cls, resp):
@@ -85,7 +90,9 @@ class CoreResponse:
             return cls([], reply=False, src="drop")
         frames = [{"sc": f.cmd, "payload": f.payload, "flag": f.flag, "srv": f.srv}
                   for f in resp.frames]
-        return cls(frames, reply=resp.reply, src=getattr(resp, "src", "dynamic"))
+        return cls(frames, reply=resp.reply, src=getattr(resp, "src", "dynamic"),
+                   wire_bytes=getattr(resp, 'wire_bytes', None),
+                   close_connection=getattr(resp, 'close_connection', False))
 
     @property
     def scs(self):
@@ -148,6 +155,79 @@ class OperationError(Exception):
         self.msg = msg
 
 
+def _response_fields(cmd):
+    import codec
+    codec._ensure_schema()
+    return codec.ds.SCHEMA.get('sc_' + str(cmd), {})
+
+
+def _check_response_payload(cmd, payload):
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise TypeError(f'sc_{cmd} payload must be bytes')
+    if not payload and any(f.get('label') == 'required' for f in _response_fields(cmd).values()):
+        raise ValueError(f'必要回复 sc_{cmd} 为空')
+
+
+@contextmanager
+def _response_encoding(ctx):
+    """Remember encoder failures even if an old respond method catches them."""
+    encoder = ctx.codec_encode
+    old_strict = getattr(ctx, '_strict_response_preparation', False)
+    old_owner = getattr(ctx, '_response_thread', None)
+    owner = threading.get_ident()
+    errors = []
+
+    def checked(name, data, *args, **kwargs):
+        if threading.get_ident() != owner:
+            return encoder(name, data, *args, **kwargs)
+        try:
+            payload = encoder(name, data, *args, **kwargs)
+            if str(name).startswith('sc_'):
+                _check_response_payload(int(str(name)[3:]), payload)
+            return payload
+        except Exception as error:
+            errors.append(error)
+            raise
+
+    ctx._strict_response_preparation = True
+    ctx._response_thread = owner
+    if encoder is not None:
+        ctx.codec_encode = checked
+    try:
+        yield
+        if errors:
+            raise ValueError('回复编码失败，不能用成功占位包代替') from errors[0]
+    finally:
+        ctx.codec_encode = encoder
+        ctx._strict_response_preparation = old_strict
+        ctx._response_thread = old_owner
+
+
+def failure_response(req, sc=None, code=1, *, reply_allowed=True):
+    """Use a schema-correct error reply, or close when no failure RPC exists."""
+    if not reply_allowed:
+        return CoreResponse([], reply=False, wire_bytes=b'')
+    if sc is None:
+        op = OPERATIONS.get(req.cmd)
+        if op is not None and not op.requires_response:
+            return CoreResponse([], reply=False, close_connection=True)
+        sc = (op.sc if op is not None else None) or req.cmd + 1
+    try:
+        import codec
+        import schema_default
+        from transport import pack_frames
+        fields = _response_fields(sc)
+        if fields and not any(f.get('name') == 'result' for f in fields.values()):
+            return CoreResponse([], reply=False, close_connection=True)
+        payload = (codec.encode('sc_' + str(sc), schema_default.default_obj('sc_' + str(sc), {'result': code}))
+                   if fields else b'\x08' + _mw._varint(code))
+        _check_response_payload(sc, payload)
+        frames = [{'sc': sc, 'payload': payload, 'flag': 0, 'srv': None}]
+        return CoreResponse(frames, wire_bytes=pack_frames(frames, req.index, req.server_idx))
+    except Exception:
+        return CoreResponse([], reply=False, close_connection=True)
+
+
 class Operation:
     """操作基类（CORE 最重要的能力——数据双端实时响应）。
 
@@ -163,11 +243,10 @@ class Operation:
     cmd = None          # cs cmd（子类必须定义）
     sc = None           # 主响应 sc（错误回包用）
 
-    # Opt in only after auditing respond and its callees: preparing a response
-    # may read uncommitted SQL and drain operation notifications, but must not
-    # send messages or perform irreversible external work. Legacy operations
-    # keep their existing boundary until reviewed individually.
-    prepare_response_in_transaction = False
+    # All registered operations prepare responses before committing SQL.
+    # respond constructs data; socket delivery remains after commit.
+    prepare_response_in_transaction = True
+    requires_response = True
 
     # uid 走线程本地存储 —— OPERATIONS 注册表里存的是**单例实例**，而 server_net 是
     # ThreadingTCPServer 每连接一线程。若 uid 是普通实例属性，两个连接并发时
@@ -794,23 +873,71 @@ class Core:
         # Handle them before generic templates can acknowledge without persisting.
         from social_protocol import COMMANDS as social_commands, dispatch as dispatch_social
         if cs_req.cmd in social_commands:
-            return self._finish_mail_summary_response(
-                CoreResponse.from_cs_response(dispatch_social(cs_req, ctx)), ctx,
-                pulse_mail_summaries, pulse_cycle_frames)
+            cs_req.prepare_response = lambda response, failure=False: self._prepare_social_response(
+                response, cs_req, ctx, pulse_mail_summaries, pulse_cycle_frames, failure=failure)
+            return CoreResponse.from_cs_response(dispatch_social(cs_req, ctx))
 
         # 0. OPERATIONS：操作调度（玩家操作 → 解析/校验/计算/落库/双端响应）
         op = OPERATIONS.get(cs_req.cmd)
         if op is not None:
-            return self._finish_mail_summary_response(
-                self._run_operation(op, cs_req, ctx), ctx, pulse_mail_summaries, pulse_cycle_frames)
+            return self._run_operation(op, cs_req, ctx, pulse_mail_summaries, pulse_cycle_frames)
         # 1-4. 响应调度（middleware 链）
-        resp = _dispatch(cs_req, ctx)
-        if getattr(ctx, "log", None):
-            n = len(resp.frames) if resp is not None else 0
-            src = (getattr(resp, "src", "") or "?") if resp is not None else "no-reply"
-            ctx.log(f"cs_{cs_req.cmd} -> 响应 {n} 帧({src})", "DEBUG", module="CORE", cmd=cs_req.cmd, to_console=False)
-        return self._finish_mail_summary_response(
-            CoreResponse.from_cs_response(resp), ctx, pulse_mail_summaries, pulse_cycle_frames)
+        return self._run_handler(cs_req, ctx, pulse_mail_summaries, pulse_cycle_frames)
+
+    def _prepare_wire_response(self, response, req, *, failure=False):
+        from transport import pack_frames
+        if response.close_connection:
+            return response
+        for frame in response.frames:
+            _check_response_payload(frame['sc'], frame['payload'])
+        response.wire_bytes = (pack_frames(response.frames, req.index, req.server_idx,
+                               packer=None if failure else req.frame_packer) if response.reply else b'')
+        return response
+
+    def _failure(self, req, ctx, code, sc=None, reply_allowed=True, pulse_summaries=(), pulse_cycle_frames=()):
+        response = failure_response(req, sc, code, reply_allowed=reply_allowed)
+        if response.close_connection:
+            return response
+        pending = take_pending_frames(ctx)
+        if pending:
+            response.frames[0:0] = [{'sc': f.cmd, 'payload': f.payload, 'flag': f.flag, 'srv': f.srv} for f in pending]
+            response.reply = True
+        response = self._finish_mail_summary_response(response, ctx, pulse_summaries, pulse_cycle_frames)
+        try:
+            return self._prepare_wire_response(response, req, failure=True)
+        except Exception:
+            return failure_response(req, sc, code, reply_allowed=reply_allowed)
+
+    def _prepare_social_response(self, response, req, ctx, pulse_summaries, pulse_cycle_frames, *, failure=False):
+        if failure:
+            prepared = (CoreResponse([], reply=False, close_connection=True) if req.cmd == 27012 else
+                        self._failure(req, ctx, 1, req.cmd + 1, pulse_summaries=pulse_summaries,
+                                      pulse_cycle_frames=pulse_cycle_frames))
+        else:
+            prepared = self._finish_mail_summary_response(CoreResponse.from_cs_response(response), ctx,
+                                                          pulse_summaries, pulse_cycle_frames)
+            self._prepare_wire_response(prepared, req)
+        response.frames = [DownFrame(f['sc'], f['payload'], flag=f['flag'], srv=f['srv']) for f in prepared.frames]
+        response.reply, response.src = prepared.reply, prepared.src
+        response.wire_bytes, response.close_connection = prepared.wire_bytes, prepared.close_connection
+        return response
+
+    def _run_handler(self, req, ctx, pulse_summaries, pulse_cycle_frames):
+        checkpoint = checkpoint_notifications(ctx)
+        # 19034 owns its SQL-before-background-task lifecycle. Its AI job and
+        # connection push need a separate lifecycle audit, not an enclosing SQL transaction.
+        transaction = (operation_transaction(ctx, immediate=False)
+                       if ctx.db is not None and req.cmd != 19034 else _null_cm())
+        try:
+            with transaction, (_response_encoding(ctx) if req.cmd != 19034 else _null_cm()):
+                response = self._finish_mail_summary_response(CoreResponse.from_cs_response(_dispatch(req, ctx)),
+                                                              ctx, pulse_summaries, pulse_cycle_frames)
+                self._prepare_wire_response(response, req)
+            return response
+        except Exception as error:
+            restore_notifications(ctx, checkpoint)
+            ctx.log(f'cs_{req.cmd} 回复准备失败: {error}', 'WARN')
+            return self._failure(req, ctx, 1, pulse_summaries=pulse_summaries, pulse_cycle_frames=pulse_cycle_frames)
 
     def _take_pending_mail_summaries(self, ctx):
         pending = getattr(ctx, "pending_frames", None)
@@ -843,20 +970,13 @@ class Core:
             response.reply = True
         return response
 
-    def _run_operation(self, op, cs_req, ctx):
-        """Apply atomically; audited operations also prepare frames before commit.
-
-        SQL and operation notifications roll back on pre-commit failure. Legacy
-        post-commit response failures cannot undo SQL; never replay apply here.
-        Transport delivery and arbitrary Python/external side effects are not
-        made transactional by this boundary.
-        """
+    def _run_operation(self, op, cs_req, ctx, pulse_summaries=(), pulse_cycle_frames=()):
+        """Prepare payloads and the complete wire batch before committing SQL."""
         sc = op.sc or cs_req.cmd
         # dispatch already reset the previous request before the timer pulse.
         # Keep legitimate pulse notifications; roll back only this operation's
         # additions when its SQL transaction fails.
         notification_checkpoint = checkpoint_notifications(ctx)
-        apply_committed = False
         try:
             op.uid = cs_req.uid  # 操作内可用 self.uid 取玩家 uid
             # 参数层防御：parse/validate 的任何异常 → 干净 code=2（缺参/格式错），
@@ -870,70 +990,44 @@ class Core:
                 raise OperationError(2, f"参数解析失败: {e}")
             # apply 在事务内（原子：扣券+出卡同生共死）；执行异常 → 干净 code=9 并回滚
             try:
-                with ctx.db.transaction() if ctx.db else _null_cm():
+                with operation_transaction(ctx, immediate=False) if ctx.db else _null_cm():
                     result = op.apply(data, ctx)
-                    if op.prepare_response_in_transaction:
-                        try:
-                            response = self._prepare_operation_response(op, cs_req, ctx, result, data)
-                        except OperationError:
-                            raise
-                        except Exception as exc:
-                            raise OperationError(1, f"响应准备失败: {exc}") from exc
-                apply_committed = True
+                    try:
+                        response = self._prepare_operation_response(op, cs_req, ctx, result, data)
+                        response = self._finish_mail_summary_response(response, ctx, pulse_summaries, pulse_cycle_frames)
+                        self._prepare_wire_response(response, cs_req)
+                    except OperationError:
+                        raise
+                    except Exception as exc:
+                        raise OperationError(1, f"响应准备失败: {exc}") from exc
             except OperationError:
                 raise
             except Exception as e:
                 raise OperationError(9, f"执行失败: {e}")
-            if not op.prepare_response_in_transaction:
-                response = self._prepare_operation_response(op, cs_req, ctx, result, data)
             self._log_operation(op, cs_req, ctx, result=result, data=data)
             clear_instance_deletions(ctx)
             return response
         except OperationError as e:
-            if not apply_committed:
-                restore_notifications(ctx, notification_checkpoint)
+            restore_notifications(ctx, notification_checkpoint)
             self._log_operation(op, cs_req, ctx, error=e)
-            payload = b"\x08" + _mw._varint(e.code & 0xFFFFFFFFFFFFFFFF)
-            err_frames = []
-            if not apply_committed:
-                err_frames.extend(
-                    {"sc": f.cmd, "payload": f.payload, "flag": f.flag, "srv": f.srv}
-                    for f in take_pending_frames(ctx)
-                )
-            if apply_committed and getattr(ctx, "removed_equips", None):
-                try:
-                    import generator as _gen
-                    p_diff = _gen.gen_payload(17023, uid=cs_req.uid, db=ctx.db, equip_list=ctx.removed_equips)
-                    if p_diff:
-                        err_frames.append({"sc": 17023, "payload": p_diff, "flag": 0, "srv": None})
-                except Exception:
-                    pass
-            err_frames.append({"sc": sc, "payload": payload, "flag": 0, "srv": None})
-            return CoreResponse(err_frames, reply=True, src="dynamic")
+            return self._failure(cs_req, ctx, e.code, sc, op.requires_response, pulse_summaries, pulse_cycle_frames)
         except Exception as e:
-            if not apply_committed:
-                restore_notifications(ctx, notification_checkpoint)
+            restore_notifications(ctx, notification_checkpoint)
             self._log_operation(op, cs_req, ctx, error=e)
-            err_frames = []
-            if not apply_committed:
-                err_frames.extend(
-                    {"sc": f.cmd, "payload": f.payload, "flag": f.flag, "srv": f.srv}
-                    for f in take_pending_frames(ctx)
-                )
-            err_frames.append({"sc": sc, "payload": b"\x08\x01", "flag": 0, "srv": None})
-            return CoreResponse(err_frames, reply=True, src="dynamic")
+            return self._failure(cs_req, ctx, 1, sc, op.requires_response, pulse_summaries, pulse_cycle_frames)
 
     def _prepare_operation_response(self, op, cs_req, ctx, result, data):
         """Build the existing ordered frame set without sending it."""
         sk = _mw.get_skeleton(cs_req.cmd)
-        op_frames = op.respond(result, data, ctx)
+        with _response_encoding(ctx):
+            op_frames = op.respond(result, data, ctx)
         if isinstance(op_frames, list):
             op_list = op_frames
         elif isinstance(op_frames, CSResponse):
             op_list = op_frames.frames
         else:
             op_list = []
-        if op.prepare_response_in_transaction:
+        if op.requires_response:
             sc = op.sc or cs_req.cmd
             if sum(f.cmd == sc for f in op_list) != 1:
                 raise ValueError(f"必要回执 sc_{sc} 缺失或重复")
@@ -962,11 +1056,9 @@ class Core:
         else:
             resp = CSResponse(op_list, src="dynamic")
         response = CoreResponse.from_cs_response(resp)
-        if op.prepare_response_in_transaction:
-            for frame in response.frames:
-                if not isinstance(frame["payload"], (bytes, bytearray, memoryview)):
-                    raise TypeError(f"sc_{frame['sc']} payload must be bytes")
-                frame["payload"] = bytes(frame["payload"])
+        for frame in response.frames:
+            _check_response_payload(frame['sc'], frame['payload'])
+            frame['payload'] = bytes(frame['payload'])
         return response
 
     def _log_operation(self, op, cs_req, ctx, result=None, data=None, error=None):

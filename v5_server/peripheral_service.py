@@ -1914,6 +1914,7 @@ class RecordActiveBoardHeroOp(Operation):
     """大厅多看板娘/场景上报：Push(32132) -> 静默不回包。"""
     cmd = 32132
     sc = None
+    requires_response = False
 
     def apply(self, data, ctx):
         ctx.uid = self.uid

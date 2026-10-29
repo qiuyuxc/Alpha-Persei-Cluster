@@ -932,6 +932,25 @@ class InventoryService:
 
     @classmethod
     def use_items(cls, ctx, uid, use_item_list):
+        """Consume and award one batch, restoring SQL and notifications on failure.
+
+        A savepoint also protects direct callers and outer transactions that
+        catch the exception. Aggregate balances without merging box choices.
+        """
+        if not use_item_list:
+            return {"result": 0, "drop_list": [], "touched_heroes": [], "touched_scene": False}
+        db = getattr(ctx, "db", ctx)
+        if db is None:
+            return {"result": 1, "drop_list": [], "touched_heroes": [], "touched_scene": False}
+
+        from operation_notifications import operation_transaction
+        from types import SimpleNamespace
+        write_ctx = ctx if hasattr(ctx, "db") else SimpleNamespace(db=db)
+        with operation_transaction(write_ctx):
+            return cls._apply_use_items(ctx, uid, use_item_list)
+
+    @classmethod
+    def _apply_use_items(cls, ctx, uid, use_item_list):
         """
         统一道具/礼包使用接口（纳管礼包、自选箱、材料、体力药、皮肤券、表情激活等）
         :param ctx: 上下文 (含 db, touched_items, touched_heroes 等) 或直接 db
@@ -939,17 +958,12 @@ class InventoryService:
         :param use_item_list: 客户端 cs_17012 格式列表 [{"item_info": {...}, "use_list": [...]}, ...]
         :return: dict，包含 result (0=成功), drop_list (按 item_net_rec 规范生成的奖励列表), touched_heroes, touched_scene
         """
-        if not use_item_list:
-            return {"result": 0, "drop_list": [], "touched_heroes": [], "touched_scene": False}
-
         db = getattr(ctx, "db", ctx)
-        if db is None:
-            return {"result": 1, "drop_list": [], "touched_heroes": [], "touched_scene": False}
-
         usable_cfgs = _get_item_usable_cfg()
         drop_cfgs = _get_drop_cfg()
 
-        # 1. 前置校验：若任一待消耗道具余额不足，返回错误码 3 (道具不足)
+        # 1. 同一道具的总需求须一起校验；每项选择仍独立展开。
+        demands = {}
         for entry in use_item_list:
             info = entry.get("item_info") if isinstance(entry, dict) else getattr(entry, "item_info", None)
             if not info:
@@ -958,6 +972,8 @@ class InventoryService:
             count = int(info.get("num") if isinstance(info, dict) else getattr(info, "num", 1))
             if count <= 0 or iid <= 0:
                 continue
+            demands[iid] = demands.get(iid, 0) + count
+        for iid, count in demands.items():
             _, have = cls.get_item_balance(db, uid, iid)
             if have < count:
                 logger.warning(f"[InventoryService.use_items] 道具不足: uid={uid} id={iid} 拥有={have} 消耗={count}")
@@ -984,7 +1000,8 @@ class InventoryService:
             # 扣除道具
             succ = cls.cost_item(ctx, uid, iid, count=count)
             if not succ:
-                return {"result": 3, "drop_list": [], "touched_heroes": list(touched_heroes), "touched_scene": touched_scene}
+                from core import OperationError
+                raise OperationError(3, f"道具不足: id={iid} 需{count}")
 
             cfg = usable_cfgs.get(str(iid))
             param = cfg.get("param") if cfg else None
@@ -994,10 +1011,7 @@ class InventoryService:
             # 特殊功能道具: 黑区信标 (41101)
             if iid == 41101:
                 if hasattr(db, "reset_mythic_by_beacon"):
-                    try:
-                        db.reset_mythic_by_beacon(uid)
-                    except Exception as e:
-                        logger.error(f"重置黑区信标失败: {e}")
+                    db.reset_mythic_by_beacon(uid)
                 continue
 
             # 分支 1: 自选箱 (use_choices 存在，或 sub_type 为 504, 508, 514, 515, 516, 517)

@@ -5,6 +5,12 @@ format, infer asset ownership or rerun a committed operation.
 """
 
 from contextlib import contextmanager
+import threading
+
+
+def response_preparation_active(ctx):
+    return bool(getattr(ctx, '_strict_response_preparation', False)
+                and getattr(ctx, '_response_thread', None) == threading.get_ident())
 
 
 FIELDS = (
@@ -42,12 +48,12 @@ def restore_notifications(ctx, checkpoint):
 
 
 @contextmanager
-def operation_transaction(ctx):
+def operation_transaction(ctx, *, immediate=True):
     """Rollback a service's SQL and queued changes, including nested callers."""
     from account_db import savepoint_transaction
     checkpoint = checkpoint_notifications(ctx)
     try:
-        with savepoint_transaction(ctx.db, immediate=True):
+        with savepoint_transaction(ctx.db, immediate=immediate):
             yield
     except BaseException:
         restore_notifications(ctx, checkpoint)

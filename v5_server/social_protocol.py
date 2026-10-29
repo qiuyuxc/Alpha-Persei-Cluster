@@ -132,7 +132,8 @@ def dispatch(req, ctx):
                           frame(27007, {'chat_msg_list': social.history(db, uid, 1)})]
                 if social.membership(db, uid):
                     frames.append(frame(27023, {'msg': [m['msg'] for m in social.history(db, uid, 3)]}))
-                return CSResponse(frames)
+                response = CSResponse(frames)
+                return req.prepare_response(response) if req.prepare_response else response
             elif cmd in (27014, 27020, 27030):
                 channel = 1 if cmd == 27014 else 3 if cmd == 27020 else data.get('channel_type')
                 row = social.send_message(db, uid, channel, data.get('content'), data.get('type'), now)
@@ -286,6 +287,9 @@ def dispatch(req, ctx):
             else:
                 raise ValueError('暂不支持该公会操作')
             frames = [frame(ack, response), *extra]
+            prepared = CSResponse(frames)
+            if req.prepare_response:
+                prepared = req.prepare_response(prepared)
         # Socket work happens only after commit; failures must not undo or replay
         # a committed membership change, grant, or chat message.
         for row in notifications:
@@ -304,15 +308,17 @@ def dispatch(req, ctx):
                 push_gm_frames(target, [packet])
             except Exception:
                 log.exception('公会成员通知失败')
-        return CSResponse(frames)
+        return prepared
     except ValueError as error:
         restore_notifications(ctx, checkpoint)
         ctx.log('社交请求被拒绝: ' + str(error), 'WARN')
-        return CSResponse([frame(ack, {'result': 1})])
+        response = CSResponse([frame(ack, {'result': 1})])
+        return req.prepare_response(response, failure=True) if req.prepare_response else response
     except Exception:
         restore_notifications(ctx, checkpoint)
         log.exception('社交请求处理失败 cmd=%s', cmd)
-        return CSResponse([frame(ack, {'result': 1})])
+        response = CSResponse([frame(ack, {'result': 1})])
+        return req.prepare_response(response, failure=True) if req.prepare_response else response
 
 
 def login_payload(db, uid, cmd):

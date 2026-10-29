@@ -409,31 +409,39 @@ class GameHandler(socketserver.StreamRequestHandler):
                         continue
                     # CORE 分发
                     req = core_mod.CoreRequest(cmd, up["payload"], uid=conn.uid,
-                                               index=up["index"], server_idx=up["server_idx"])
+                                               index=up["index"], server_idx=up["server_idx"], frame_packer=pack_down)
                     try:
                         resp = self.server.core.dispatch(req, conn)
                     except Exception as _de:
                         self.server.core.log(f"[GAME] 处理 CS_{cmd} 内部异常已隔离: {_de}", "ERROR")
-                        continue
+                        failure = core_mod.failure_response(req)
+                        if failure.reply and failure.wire_bytes:
+                            with _send_lock:
+                                self.request.sendall(failure.wire_bytes)
+                        return
+                    if getattr(resp, 'close_connection', False):
+                        return
                     src_tag = str(getattr(resp, "src", "dynamic") or "dynamic").upper()
                     if not resp.reply:
                         self.server.core.log(f"CS_{cmd} -> (No Reply) | Source: [{src_tag}]", "DEBUG", module="NET", to_console=False)
                         continue
                     # 组帧回发（idx 回显请求，srv 递增；91xxx 用连接级）
-                    out = b""
+                    out = getattr(resp, 'wire_bytes', None)
+                    if out is None:
+                        try:
+                            from transport import pack_frames
+                            out = pack_frames(resp.frames, up['index'], up['server_idx'], packer=pack_down)
+                        except Exception as error:
+                            self.server.core.log(f'CS_{cmd} 回复组帧失败: {error}', 'ERROR', module='NET')
+                            failure = core_mod.failure_response(req)
+                            if failure.reply and failure.wire_bytes:
+                                with _send_lock:
+                                    self.request.sendall(failure.wire_bytes)
+                            return
                     next_srv = up["server_idx"] + 1
                     for f in resp.frames:
                         srv = f["srv"] if f["srv"] is not None else next_srv
                         _check_secondary_full_frame(f["sc"], f"cmd=CS_{cmd}")
-                        # compress=None = 自动：payload>10KB 就 deflate（与真实服务器一致）。
-                        try:
-                            out += pack_down(f["sc"], f["payload"], up["index"], srv,
-                                             flag=f["flag"], compress=None)
-                        except Exception as _pe:
-                            # 单帧组装失败只丢这一帧并留日志，不连坐整条连接
-                            self.server.core.log(
-                                f"CS_{cmd} -> SC_{f['sc']} 组帧失败已丢弃: {_pe}", "ERROR", module="NET")
-                            continue
                         # 底层逐帧写入底账文件，控制台由 LOGISTICS 物流日志高亮呈现
                         self.server.core.log(
                             f"[FRAME #{srv}] CS_{cmd} -> SC_{f['sc']} | Source: [{src_tag}] | Size: {len(f['payload'])}B | flag={f.get('flag', 0)}",

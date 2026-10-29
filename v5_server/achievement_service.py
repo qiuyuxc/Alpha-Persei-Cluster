@@ -138,15 +138,13 @@ class AchievementService:
     # ------------------------------------------------------------------
 
     def init_user_achievements(self, uid):
-        """确保玩家数据库中存在全量 478 项成就行"""
+        """Add missing rows and align current needs without resetting progress or claims."""
+        _ensure_cfg()
         if not self.db or not _CFG:
             return
-        rows = self.db.query("SELECT achievement_id FROM achievement WHERE uid=?", (uid,))
+        rows = self.db.query("SELECT achievement_id,need,progress,complete_flag,achieve_time FROM achievement WHERE uid=?", (uid,))
         existing_ids = {int(r["achievement_id"]) for r in (rows or [])}
         missing_ids = set(_CFG.keys()) - existing_ids
-        if not missing_ids:
-            return
-
         insert_batch = []
         for aid in missing_ids:
             cfg_item = _CFG[aid]
@@ -168,11 +166,36 @@ class AchievementService:
             (uid, achievement_id, name, condition, desc, need, reward_json, progress, complete_flag, achieve_time)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        try:
-            self.db.executemany(sql, insert_batch)
-            logger.info(f"[achievement] 初始化 uid={uid} 成就数据，补充 {len(insert_batch)} 条记录")
-        except Exception as e:
-            logger.error(f"[achievement] 批量初始化成就失败 uid={uid}: {e}")
+        from account_db import savepoint_transaction
+        with savepoint_transaction(self.db):
+            if insert_batch:
+                self.db.executemany(sql, insert_batch)
+                logger.info(f"[achievement] 初始化 uid={uid} 成就数据，补充 {len(insert_batch)} 条记录")
+            self._sync_thresholds(uid, rows)
+
+    def _sync_thresholds(self, uid, rows):
+        now = int(time.time())
+        updates = []
+        for row in rows:
+            aid = int(row['achievement_id'])
+            cfg = _CFG.get(aid)
+            if cfg is None:
+                continue
+            need = int(cfg.get('need') or 0)
+            old_time = int(row.get('achieve_time') or 0)
+            new_time = old_time
+            if int(row.get('complete_flag') or 0) != 1:
+                if int(row.get('progress') or 0) < need:
+                    new_time = 0
+                elif old_time in (0, 1786411503):
+                    new_time = now
+            if row.get('need') != need or new_time != old_time:
+                updates.append((need, new_time, uid, aid,
+                                int(row.get('complete_flag') or 0), int(row.get('progress') or 0), old_time))
+        if updates:
+            self.db.executemany('UPDATE achievement SET need=?,achieve_time=? WHERE uid=? AND achievement_id=? '
+                                'AND COALESCE(complete_flag,0)=? AND COALESCE(progress,0)=? '
+                                'AND COALESCE(achieve_time,0)=?', updates)
 
     def get_achievement_login_payload(self, uid):
         """
@@ -185,14 +208,14 @@ class AchievementService:
         self.reconcile_achievements(uid)
 
         rows = self.db.query(
-            "SELECT achievement_id, progress, complete_flag, achieve_time FROM achievement WHERE uid=? ORDER BY achievement_id",
+            "SELECT achievement_id, progress, need, complete_flag, achieve_time FROM achievement WHERE uid=? ORDER BY achievement_id",
             (uid,)
         )
         now_ts = int(time.time())
         ach_list = []
         for r in (rows or []):
             a_ts = int(r.get("achieve_time") or 0)
-            if a_ts == 1786411503:
+            if a_ts == 1786411503 and int(r.get('complete_flag') or 0) != 1:
                 a_ts = now_ts if (int(r.get("progress") or 0) >= int(r.get("need") or 0)) else 0
             ach_list.append({
                 "id": int(r["achievement_id"]),
@@ -224,15 +247,12 @@ class AchievementService:
     # ------------------------------------------------------------------
 
     def claim_achievements(self, uid, aid_list, ctx=None):
-        """Own the transaction for direct callers; join Core's transaction otherwise."""
-        checkpoint = checkpoint_notifications(ctx) if ctx is not None else None
-        try:
-            with self.db.transaction():
-                return self._claim_achievements(uid, aid_list, ctx)
-        except BaseException:
-            if checkpoint is not None:
-                restore_notifications(ctx, checkpoint)
-            raise
+        """Restore this claim even when an outer caller catches its failure."""
+        from operation_notifications import operation_transaction
+        from types import SimpleNamespace
+        write_ctx = ctx if ctx is not None else SimpleNamespace(db=self.db)
+        with operation_transaction(write_ctx):
+            return self._claim_achievements(uid, aid_list, ctx)
 
     def _claim_achievements(self, uid, aid_list, ctx=None):
         """
@@ -253,7 +273,7 @@ class AchievementService:
 
         placeholders = ",".join("?" for _ in clean_ids)
         rows = self.db.query(
-            f"SELECT achievement_id, progress, need, complete_flag FROM achievement WHERE uid=? AND achievement_id IN ({placeholders})",
+            f"SELECT achievement_id, progress, need, complete_flag, achieve_time FROM achievement WHERE uid=? AND achievement_id IN ({placeholders})",
             (uid, *clean_ids)
         )
         row_map = {int(r["achievement_id"]): r for r in (rows or [])}
@@ -270,7 +290,7 @@ class AchievementService:
                 continue
             # 未达成指标的跳过
             prog = int(r.get("progress") or 0)
-            need = int(r.get("need") or 0)
+            need = int(_CFG[aid].get("need") or 0)
             if prog < need:
                 raise OperationError(2, f"成就 {aid} 尚未达成")
 
@@ -282,6 +302,8 @@ class AchievementService:
 
         if not valid_ids:
             return {"result": 0, "reward_list": [], "claimed_ids": []}
+
+        self._sync_thresholds(uid, [row_map[aid] for aid in valid_ids])
 
         # 1. 标记 complete_flag = 1 (已领奖)
         v_placeholders = ",".join("?" for _ in valid_ids)
@@ -367,7 +389,7 @@ class AchievementService:
         item_ids = [item["id"] for item in target_items]
         placeholders = ",".join("?" for _ in item_ids)
         rows = self.db.query(
-            f"SELECT achievement_id, progress, complete_flag, achieve_time FROM achievement WHERE uid=? AND achievement_id IN ({placeholders})",
+            f"SELECT achievement_id, progress, need, complete_flag, achieve_time FROM achievement WHERE uid=? AND achievement_id IN ({placeholders})",
             (uid, *item_ids)
         )
         db_state = {int(r["achievement_id"]): r for r in (rows or [])}
@@ -409,17 +431,22 @@ class AchievementService:
                 continue
 
             # 进度发生变化或修复素材旧时间戳 (1786411503≈2026/08/11)
-            if new_prog != old_prog or (new_prog >= need and old_achieve_ts in (0, 1786411503)):
+            if (new_prog != old_prog or (cur_row and cur_row.get('need') != need)
+                    or (new_prog >= need and old_achieve_ts in (0, 1786411503))
+                    or (new_prog < need and old_achieve_ts != 0)):
                 is_newly_finished = (new_prog >= need and old_prog < need)
                 if new_prog >= need:
                     new_achieve_ts = now if (is_newly_finished or old_achieve_ts in (0, 1786411503)) else old_achieve_ts
                 else:
                     new_achieve_ts = 0
 
-                self.db.execute(
-                    "UPDATE achievement SET progress=?, achieve_time=? WHERE uid=? AND achievement_id=?",
-                    (new_prog, new_achieve_ts, uid, aid)
+                changed = self.db.execute(
+                    "UPDATE achievement SET progress=?, need=?, achieve_time=? WHERE uid=? AND achievement_id=? "
+                    "AND COALESCE(complete_flag,0)=0",
+                    (new_prog, need, new_achieve_ts, uid, aid)
                 )
+                if changed.rowcount != 1:
+                    continue
 
                 diff_list.append({
                     "id": aid,
@@ -571,22 +598,12 @@ class AchievementService:
         now = int(time.time())
         diff_list = []
 
-        # 查询该玩家所有成就的现有状态，必要时自动初始化
+        # 先同步当前门槛，再按持久进度清理完成时间。
+        self.init_user_achievements(uid)
         rows = self.db.query(
             "SELECT achievement_id, progress, complete_flag, achieve_time FROM achievement WHERE uid=?",
             (uid,)
         )
-        if not rows or len(rows) < len(_CFG):
-            self.init_user_achievements(uid)
-            rows = self.db.query(
-                "SELECT achievement_id, progress, complete_flag, achieve_time FROM achievement WHERE uid=?",
-                (uid,)
-            )
-
-        # 洗净库中残留的素材历史假时间戳 (1786411503≈2026/08/11)
-        self.db.execute("UPDATE achievement SET achieve_time=0 WHERE uid=? AND complete_flag=0 AND progress < need AND achieve_time > 0", (uid,))
-        self.db.execute("UPDATE achievement SET achieve_time=? WHERE uid=? AND complete_flag=0 AND progress >= need AND achieve_time=1786411503", (now, uid))
-
         db_state = {int(r["achievement_id"]): dict(r) for r in (rows or [])}
 
         def update_item_progress(aid, new_val):
@@ -605,10 +622,13 @@ class AchievementService:
                     new_achieve_ts = now if (is_newly_finished or old_achieve_ts in (0, 1786411503)) else old_achieve_ts
                 else:
                     new_achieve_ts = 0
-                self.db.execute(
-                    "UPDATE achievement SET progress=?, achieve_time=? WHERE uid=? AND achievement_id=?",
+                changed = self.db.execute(
+                    "UPDATE achievement SET progress=?, achieve_time=? WHERE uid=? AND achievement_id=? "
+                    "AND COALESCE(complete_flag,0)=0",
                     (new_prog, new_achieve_ts, uid, aid)
                 )
+                if changed.rowcount != 1:
+                    return
                 cur_row["progress"] = new_prog
                 cur_row["achieve_time"] = new_achieve_ts
                 diff_list.append({

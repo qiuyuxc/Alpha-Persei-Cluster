@@ -20,6 +20,7 @@ from logger import log as _file_log  # noqa: E402
 import schema_default as _sd  # noqa: E402  兜底响应的字段补齐器
 import battle_payload  # 动态战斗初始化帧构建器
 from enchant_slots_util import default_slot_list
+from operation_notifications import response_preparation_active
 
 
 def fallback_payload(sc_cmd, values=None):
@@ -86,15 +87,17 @@ def _varint(v):
 
 class CSRequest:
     """客户端请求：cmd + payload + 序号 + uid。body 为按需解码视图。"""
-    __slots__ = ("cmd", "payload", "index", "server_idx", "uid", "body")
+    __slots__ = ("cmd", "payload", "index", "server_idx", "uid", "body", "frame_packer", "prepare_response")
 
-    def __init__(self, cmd, payload=b"", index=0, server_idx=0, uid=0, body=None):
+    def __init__(self, cmd, payload=b"", index=0, server_idx=0, uid=0, body=None, frame_packer=None):
         self.cmd = cmd
         self.payload = payload or b""
         self.index = index
         self.server_idx = server_idx
         self.uid = uid
         self.body = body
+        self.frame_packer = frame_packer
+        self.prepare_response = None
 
 
 class DownFrame:
@@ -110,12 +113,14 @@ class DownFrame:
 
 class CSResponse:
     """零或多帧响应。reply=False = 明确不回包。src = 命中层（handler/skeleton/template/drop/ack0，日志标注用）。"""
-    __slots__ = ("frames", "reply", "src")
+    __slots__ = ("frames", "reply", "src", "wire_bytes", "close_connection")
 
-    def __init__(self, frames=None, reply=True, src=""):
+    def __init__(self, frames=None, reply=True, src="", wire_bytes=None, close_connection=False):
         self.frames = list(frames or [])
         self.reply = reply
         self.src = src
+        self.wire_bytes = wire_bytes
+        self.close_connection = close_connection
 
     def to_bytes(self, index=0, server_idx=0):
         """组帧：idx 回显请求，srv 从 server_idx+1 起逐帧递增（DownFrame.srv 显式指定时优先）。"""
@@ -3835,6 +3840,8 @@ def handle_request(req, ctx=None):
             return resp
         except Exception as e:
             ctx.log(f"[middleware] cmd={req.cmd} 处理异常: {e}", "WARN")
+            if response_preparation_active(ctx):
+                raise
             # 契约 §7：库异常 → 回 result=非0 错误码（91xxx 需 flag=1 + 连接级 srv）
             if req.cmd in (91002, 91006, 91014, 91016):
                 resp = _error_response(req, ctx, flag=1, srv=ctx.next_chat_srv(req))

@@ -214,17 +214,23 @@ USE_NEW_INVENTORY_SERVICE = True
 
 
 def _item_add(ctx, uid, item_id, delta):
-    """加条目（优先委托给 inventory_service，支持异常自动降级走就地旧逻辑）。"""
+    """Use one award writer and restore its SQL/notifications on failure."""
+    from operation_notifications import operation_transaction
+    with operation_transaction(ctx):
+        return _item_add_once(ctx, uid, item_id, delta)
+
+
+def _item_add_once(ctx, uid, item_id, delta):
+    """Caller owns a savepoint; compatibility is chosen before any award."""
     if USE_NEW_INVENTORY_SERVICE:
         try:
             import inventory_service
+        except ModuleNotFoundError as exc:
+            if exc.name != "inventory_service":
+                raise
+        else:
             inventory_service.grant_item(ctx, uid, item_id, delta)
             return
-        except Exception as e:
-            if hasattr(ctx, "log"):
-                ctx.log(f"[InventoryService WARN] grant_item 异常: {e}，降级至旧逻辑")
-            else:
-                logger.warning(f"[InventoryService WARN] grant_item 异常: {e}，降级至旧逻辑")
 
     # ================= 🛡️ 旧版就地代码（完全保留保底） =================
     iid = int(item_id)
@@ -375,10 +381,13 @@ def _item_deduct(ctx, uid, item_id, num):
     return t
 
 
-def _refresh_frames(ctx, uid, hero_id=None, *, strict=False):
+def _refresh_frames(ctx, uid, hero_id=None, *, strict=None):
     """操作后补推数据原子差量刷新帧：sc_14007（单英雄实时数据）+ sc_17023（道具/货币差量原子推送）。
     strict 用于已核对的提交前准备路径：必要差量失败须向外传播，由事务回滚。
     其他调用保持原容错和帧顺序。"""
+    if strict is None:
+        from operation_notifications import response_preparation_active
+        strict = response_preparation_active(ctx)
     out = []
     # 1. 优先推送原子差量帧 (sc_17023: 货币、材料、被销毁钥从/刻印)
     try:
@@ -427,6 +436,8 @@ def _refresh_frames(ctx, uid, hero_id=None, *, strict=False):
             hf = _hc.build_hero_14007_frame(ctx.db, uid, int(hero_id))
             if hf:
                 out.append(hf)
+            elif strict:
+                raise ValueError(f'必要角色刷新 sc_14007 为空: {hero_id}')
         except Exception:
             if strict:
                 raise
@@ -1202,6 +1213,7 @@ class RedpointReportOp(Operation):
 
     cmd = 56002
     sc = 56002
+    requires_response = False
 
     def apply(self, data, ctx):
         rd_id = data.get("red_dot") or data.get("id")
@@ -1905,23 +1917,19 @@ class UseItemOp(Operation):
         extra_frames = []
         # 换装/英雄变更帧下发 (sc_14007)
         for hid in result.get("touched_heroes") or []:
-            try:
-                import hero_codec as _hc
-                hf = _hc.build_single_hero_frame(ctx.db, self.uid, hid)
-                if hf:
-                    extra_frames.append(DownFrame(14007, hf))
-            except Exception:
-                pass
+            import hero_codec as _hc
+            hf = _hc.build_single_hero_frame(ctx.db, self.uid, hid)
+            if not hf:
+                raise ValueError(f'必要道具使用角色刷新为空: {hid}')
+            extra_frames.append(DownFrame(14007, hf))
 
         # 场景变更帧下发 (sc_32009)
         if result.get("touched_scene"):
-            try:
-                import generator as _gen
-                p = _gen.gen_payload(32009, uid=self.uid, db=ctx.db)
-                if p:
-                    extra_frames.append(DownFrame(32009, p))
-            except Exception:
-                pass
+            import generator as _gen
+            p = _gen.gen_payload(32009, uid=self.uid, db=ctx.db)
+            if not p:
+                raise ValueError('必要道具使用场景刷新为空')
+            extra_frames.append(DownFrame(32009, p))
 
         ctx.log(f"cs_17012 -> 道具使用完成: result={res_code}, drops={len(drop_list)}")
         # 核心标准：原子帧 (_refresh_frames + extra_frames) 必须先于业务主响应帧 (sc_17013) 下发，确保客户端回调时本地内存已完全对齐

@@ -54,6 +54,28 @@ def maybe_deflate(payload, threshold=DEFAULT_COMPRESS_THRESHOLD, force=False):
 MAX_DOWN_BODY = 0xFFFF          # 下行 size 是 u16 → body 最大 65535，payload 最大 65526
 
 
+def pack_frames(frames, index=0, server_idx=0, packer=None):
+    """Prepare one complete response without sending a partial frame batch."""
+    packer = packer or pack_down
+    chunks = []
+    next_srv = server_idx + 1
+    for frame in frames:
+        if isinstance(frame, dict):
+            cmd, payload = frame['sc'], frame['payload']
+            flag, explicit = frame.get('flag', 0), frame.get('srv')
+        else:
+            cmd, payload, flag, explicit = frame.cmd, frame.payload, frame.flag, frame.srv
+        if not isinstance(payload, (bytes, bytearray, memoryview)):
+            raise TypeError('downstream payload must be bytes')
+        srv = explicit if explicit is not None else next_srv
+        chunk = packer(cmd, bytes(payload), index, srv, flag=flag, compress=None)
+        if not isinstance(chunk, (bytes, bytearray, memoryview)) or not chunk:
+            raise ValueError('downstream frame packing returned no bytes')
+        chunks.append(bytes(chunk))
+        next_srv = srv + 1
+    return b''.join(chunks)
+
+
 def pack_down(cmd, payload=b"", index=0, server_idx=0, flag=0,
               compress=None, threshold=DEFAULT_COMPRESS_THRESHOLD, force=False):
     """下行组帧：u16 size(BE, size=9+payload) | 00 00 [flag] | frame_cmd(BE) | idx | srv | payload。
