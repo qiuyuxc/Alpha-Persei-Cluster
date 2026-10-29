@@ -185,14 +185,30 @@ def get_boss_challenge_reward_items(reward_type, reward_val, area_id=4, mode_id=
     return items
 
 
-def get_boss_challenge_data(uid, db):
+def _boss_star_flags(values):
+    """45001 uses integer flags; battle settlement stores generic star objects."""
+    from core import OperationError
+
+    if not isinstance(values, list):
+        raise OperationError(406, '梦境星级存档格式无效')
+    flags = [0, 0, 0]
+    for index, value in enumerate(values, 1):
+        star_id = value.get('star_id', index) if isinstance(value, dict) else index
+        achieved = value.get('is_achieve', 0) if isinstance(value, dict) else value
+        if type(star_id) is not int or not 1 <= star_id <= 3 or achieved not in (0, 1):
+            raise OperationError(406, '梦境星级存档格式无效')
+        flags[star_id - 1] = max(flags[star_id - 1], int(achieved))
+    return flags
+
+
+def get_boss_challenge_data(uid, db, *, strict=False, now_ts=None):
     """
     返回梦境再构当期动态数据：
     - sc_45201: mode, next_refresh_time, difficulty_list
     - sc_45001: 普通梦境 (boss_challenge_list, use_times, receive_star_list, area_id)
     - sc_45101: 进阶梦境 (advance_id, boss_list, receive_point_list)
     """
-    now = int(time.time())
+    now = int(time.time() if now_ts is None else now_ts)
     next_rf = get_next_thursday_5am(now)
     cycle = get_weekly_cycle_id(now)
     cat = get_boss_catalog()
@@ -201,6 +217,8 @@ def get_boss_challenge_data(uid, db):
         try:
             db.check_and_lazy_refresh_boss_challenge(uid, now)
         except Exception:
+            if strict:
+                raise
             pass
 
     # 1. 读取玩家梦境再构进度与模式
@@ -239,6 +257,8 @@ def get_boss_challenge_data(uid, db):
                 else:
                     user_mode = 0
         except Exception:
+            if strict:
+                raise
             pass
             
         try:
@@ -250,6 +270,8 @@ def get_boss_challenge_data(uid, db):
                     "diff_idx": int(r.get("diffculty_index") or 1)
                 }
         except Exception:
+            if strict:
+                raise
             pass
             
         try:
@@ -260,6 +282,8 @@ def get_boss_challenge_data(uid, db):
                 adv_heroes_map[bid] = json.loads(r.get("used_heroes") or "[]")
                 adv_presets_map[bid] = json.loads(r.get("last_heroes_cfg") or "[]")
         except Exception:
+            if strict:
+                raise
             pass
             
         try:
@@ -269,6 +293,8 @@ def get_boss_challenge_data(uid, db):
                 if bid not in user_points or user_points[bid] == 0:
                     user_points[bid] = int(r.get("score") or 0)
         except Exception:
+            if strict:
+                raise
             pass
 
         try:
@@ -282,6 +308,8 @@ def get_boss_challenge_data(uid, db):
                     "star_info": json.loads(r.get("star_info") or "[]")
                 }
         except Exception:
+            if strict:
+                raise
             pass
             
         try:
@@ -292,6 +320,8 @@ def get_boss_challenge_data(uid, db):
                 elif r.get("reward_type") == 2:
                     claimed_points.append(int(r["reward_id"]))
         except Exception:
+            if strict:
+                raise
             pass
 
     # 2. 进阶/扭曲梦境 BOSS 抽取（按周期确定性抽取 3 或 4 位首领）
@@ -346,6 +376,9 @@ def get_boss_challenge_data(uid, db):
         star_inf = nd.get("star_info") or []
         if not star_inf and finish_stg > 0 and g_stages:
             star_inf = [{"stage_id": finish_stg, "star_list": [1, 1, 1]}]
+        star_inf = [{"stage_id": int(row['stage_id']),
+                     "star_list": _boss_star_flags(row.get('star_list', []))}
+                    for row in star_inf]
             
         normal_boss_list.append({
             "group_id": int(gid),
@@ -376,6 +409,112 @@ def get_boss_challenge_data(uid, db):
     }
     
     return sc_45201_obj, sc_45001_obj, sc_45101_obj
+
+
+def _boss_reward_rows(catalog, data, reward_type):
+    from core import OperationError
+
+    if reward_type == 1:
+        group = catalog.get('normal_areas', {}).get(str(data[1]['area_id']))
+        field = 'star'
+    elif reward_type == 2:
+        group = catalog.get('advance_modes', {}).get(str(data[2]['advance_id']))
+        field = 'point'
+    else:
+        raise OperationError(2, '梦境奖励类型无效')
+    rows = group.get('rewards') if isinstance(group, dict) else None
+    if not isinstance(rows, list) or not rows:
+        raise OperationError(406, '梦境当前难度奖励配置缺失')
+    seen = set()
+    for row in rows:
+        threshold = row.get(field) if isinstance(row, dict) else None
+        drops = row.get('drops') if isinstance(row, dict) else None
+        if (type(threshold) is not int or threshold <= 0 or threshold in seen
+                or not isinstance(drops, list) or not drops
+                or any(not isinstance(drop, list) or len(drop) not in (2, 3)
+                       or any(type(value) is not int or value <= 0 for value in drop[:2])
+                       or (len(drop) == 3 and drop[2] != 100) for drop in drops)):
+            raise OperationError(406, '梦境奖励配置无效')
+        seen.add(threshold)
+    return rows, field
+
+
+def _boss_normal_star_count(catalog, normal_data):
+    achieved = set()
+    for boss in normal_data['boss_challenge_list']:
+        group = catalog.get('stage_groups', {}).get(str(boss['group_id']), {})
+        stages = set(group.get('stages', []))
+        for row in boss['star_info']:
+            if row['stage_id'] in stages:
+                for star_id, flag in enumerate(row['star_list'], 1):
+                    if flag == 1:
+                        achieved.add((boss['group_id'], row['stage_id'], star_id))
+    return len(achieved)
+
+
+def claim_boss_challenge_rewards(ctx, uid, reward_type, reward_id=None):
+    """Validate, grant and record single/bulk claims under the same savepoint."""
+    from core import OperationError
+    from inventory_service import InventoryService
+    from operation_notifications import operation_transaction
+
+    if getattr(ctx, 'db', None) is None:
+        raise OperationError(406, '梦境玩家数据库不可用')
+    with operation_transaction(ctx):
+        now = int(time.time())
+        data = get_boss_challenge_data(uid, ctx.db, strict=True, now_ts=now)
+        catalog = get_boss_catalog()
+        rows, field = _boss_reward_rows(catalog, data, reward_type)
+        if data[0]['mode'] != reward_type:
+            raise OperationError(2, '当前梦境模式不能领取该类奖励')
+        if reward_type == 1:
+            total = _boss_normal_star_count(catalog, data[1])
+            claimed = set(data[1]['receive_star_list'])
+        else:
+            total = sum(max(0, boss['max_point']) for boss in data[2]['boss_list'])
+            claimed = set(data[2]['receive_point_list'])
+        if reward_id is not None:
+            selected = [row for row in rows if row[field] == reward_id]
+            if not selected:
+                raise OperationError(2, '梦境奖励档位不存在')
+            if reward_id not in claimed and total < reward_id:
+                raise OperationError(2, '梦境成绩未达到领奖条件')
+        else:
+            selected = [row for row in rows if row[field] <= total]
+        selected = [row for row in selected if row[field] not in claimed]
+        merged = {}
+        for row in selected:
+            for item_id, count, *unused in row['drops']:
+                merged[item_id] = merged.get(item_id, 0) + count
+        items = [{'id': item_id, 'num': count} for item_id, count in merged.items()]
+        if items:
+            InventoryService.grant_items(ctx, uid, list(merged.items()), source='boss_challenge_reward')
+            if reward_type == 2:
+                ctx.db.claim_all_boss_challenge_point_rewards(uid, [row[field] for row in selected])
+            else:
+                ctx.db.claim_boss_challenge_reward(uid, 1, reward_id)
+        return {'items': items, 'boss_data': get_boss_challenge_data(uid, ctx.db, strict=True, now_ts=now)}
+
+
+def reset_boss_challenge_advance(ctx, uid, boss_id=None):
+    """A claimed point tier prevents releasing its scores and locked heroes."""
+    from core import OperationError
+    from operation_notifications import operation_transaction
+
+    if getattr(ctx, 'db', None) is None:
+        raise OperationError(406, '梦境玩家数据库不可用')
+    with operation_transaction(ctx):
+        now = int(time.time())
+        data = get_boss_challenge_data(uid, ctx.db, strict=True, now_ts=now)
+        if data[2]['receive_point_list']:
+            raise OperationError(2, '已领取梦境积分奖励，不能重置成绩')
+        if boss_id is not None:
+            if boss_id not in {boss['id'] for boss in data[2]['boss_list']}:
+                raise OperationError(2, '梦境首领不属于当前阵容')
+            ctx.db.reset_boss_challenge_advance_boss(uid, boss_id)
+        else:
+            ctx.db.reset_boss_challenge_advance_all(uid)
+        return {'boss_data': get_boss_challenge_data(uid, ctx.db, strict=True, now_ts=now)}
 
 
 # ----------------- 4. 黑区净化 (Mythic) 数据构建 -----------------

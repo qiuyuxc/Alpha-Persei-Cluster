@@ -103,6 +103,62 @@ def _get_random_box_pool(item_id, param):
     return pool
 
 
+_SELECTION_BOX_TYPES = (504, 508, 514, 515, 516, 517)
+
+
+def _get_reward_pairs(item_id, param):
+    from core import OperationError
+
+    if (isinstance(param, list) and len(param) == 2
+            and all(type(value) is int for value in param)):
+        param = [param]
+    if (not isinstance(param, list) or not param
+            or any(not isinstance(row, (list, tuple)) or len(row) != 2
+                   or any(type(value) is not int or value <= 0 for value in row)
+                   for row in param)):
+        raise OperationError(406, f'道具奖励配置缺失或无效: id={item_id}')
+    return param
+
+
+def _get_selection_reward(item_id, param, choices):
+    from core import OperationError
+
+    # The matching client sends one 1-based option, separately from box count.
+    if not isinstance(param, list) or not param or not isinstance(param[0], (list, tuple)):
+        raise OperationError(406, f'自选箱奖励配置缺失或无效: id={item_id}')
+    rewards = _get_reward_pairs(item_id, param)
+    if len(choices) != 1 or not 1 <= choices[0] <= len(rewards):
+        raise OperationError(2, f'自选箱须指定一个有效选项: id={item_id}')
+    return rewards[choices[0] - 1]
+
+
+def _get_drop_box_config(item_id, param, drop_cfgs):
+    from core import OperationError
+
+    drop_id = param[0] if isinstance(param, list) and len(param) == 1 else param
+    entry = drop_cfgs.get(str(drop_id)) if type(drop_id) is int and drop_id > 0 else None
+    if not isinstance(entry, dict):
+        raise OperationError(406, f'掉落箱配置缺失或无效: id={item_id}')
+    for kind in ('base', 'random', 'weight'):
+        rows = entry.get(kind)
+        if not isinstance(rows, list):
+            raise OperationError(406, f'掉落箱奖励配置无效: id={item_id} kind={kind}')
+        for row in rows:
+            if (not isinstance(row, (list, tuple)) or len(row) not in (2, 3)
+                    or any(type(value) is not int for value in row)
+                    or row[0] <= 0 or row[1] <= 0
+                    or (kind == 'weight' and (len(row) != 3 or row[2] < 0))
+                    or (kind != 'weight' and len(row) == 3 and not 0 <= row[2] <= 100)):
+                raise OperationError(406, f'掉落箱奖励配置无效: id={item_id} kind={kind}')
+    weights = entry['weight']
+    weight_count = entry.get('weight_count', 1 if weights else 0)
+    if (type(weight_count) is not int or weight_count < 0
+            or not any(entry[kind] for kind in ('base', 'random', 'weight'))
+            or (weights and weight_count > 0 and sum(row[2] for row in weights) <= 0)):
+        raise OperationError(406, f'掉落箱抽取配置无效: id={item_id}')
+    return entry, weight_count
+
+
 _ITEM_EXCHANGE_CFG_CACHE = None
 
 
@@ -977,6 +1033,7 @@ class InventoryService:
         db = getattr(ctx, "db", ctx)
         usable_cfgs = _get_item_usable_cfg()
         drop_cfgs = _get_drop_cfg()
+        from core import OperationError
 
         # 1. 同一道具的总需求须一起校验；每项选择仍独立展开。
         demands = {}
@@ -1022,11 +1079,27 @@ class InventoryService:
             itype = int(cfg.get("type") or 0)
 
             random_pool = None
+            selection_reward = None
+            fixed_rewards = None
             if sub_type == 502:
                 if use_choices:
                     from core import OperationError
                     raise OperationError(2, f"随机箱不能指定自选项: id={iid}")
                 random_pool = _get_random_box_pool(iid, param)
+            elif sub_type == 507:
+                if use_choices:
+                    raise OperationError(2, f'掉落箱不能指定自选项: id={iid}')
+                drop_entry, weight_count = _get_drop_box_config(iid, param, drop_cfgs)
+            elif use_choices or sub_type in _SELECTION_BOX_TYPES:
+                selection_reward = _get_selection_reward(iid, param, use_choices)
+            elif sub_type in (501, 506, 518, 401, 402, 403, 404) or itype == 5:
+                # TIME_LIMIT_ITEM references the normal vitality item in ItemCfg.
+                if sub_type == 404 and isinstance(param, list) and len(param) == 1:
+                    reference = usable_cfgs.get(str(param[0]))
+                    if not isinstance(reference, dict) or reference.get('sub_type') not in (401, 403):
+                        raise OperationError(406, f'限时道具引用配置缺失或无效: id={iid}')
+                    param = reference.get('param')
+                fixed_rewards = _get_reward_pairs(iid, param)
 
             # 先校验配置；执行中任一失败由整批保存点恢复。
             succ = cls.cost_item(ctx, uid, iid, count=count)
@@ -1047,100 +1120,42 @@ class InventoryService:
                     all_items_to_grant.append((reward_id, 1))
                     raw_drops.append({"id": reward_id, "num": 1, "time_valid": 0})
 
-            # 分支 1: 自选箱 (use_choices 存在，或 sub_type 为 504, 508, 514, 515, 516, 517)
-            elif (use_choices or sub_type in (504, 508, 514, 515, 516, 517)) and param and isinstance(param, list):
-                # 若客户端未上报选择索引，默认选取第 1 项避免越界穿透至全部发放
-                choices = use_choices if use_choices else [1]
-                for choice_idx in choices:
-                    # 客户端协议选择索引为 1-based
-                    if 1 <= choice_idx <= len(param):
-                        chosen = param[choice_idx - 1]
-                        if isinstance(chosen, (list, tuple)):
-                            cid = int(chosen[0])
-                            cnum = int(chosen[1]) * count
-                        else:
-                            cid = int(chosen)
-                            cnum = 1 * count
-                        all_items_to_grant.append((cid, cnum))
-                        raw_drops.append({"id": cid, "num": cnum, "time_valid": 0})
-                    else:
-                        logger.warning(f"自选索引超界: iid={iid} choice_idx={choice_idx} total={len(param)}")
+            # 分支 1: 自选箱只接受一个有效选项，数量由消耗箱数决定。
+            elif selection_reward is not None:
+                cid, per_box = selection_reward
+                cnum = per_box * count
+                all_items_to_grant.append((cid, cnum))
+                raw_drops.append({"id": cid, "num": cnum, "time_valid": 0})
 
             # 分支 2: 掉落包 (sub_type == 507: 纳管 base 保底、random 独立概率、weight 权重轮盘)
-            elif sub_type == 507 and param:
-                drop_id = param[0] if isinstance(param, list) and param else param
-                d_entry = drop_cfgs.get(str(drop_id))
-                if d_entry:
-                    base_list = d_entry.get("base") or []
-                    rand_list = d_entry.get("random") or []
-                    weight_list = d_entry.get("weight") or []
-                    w_count = int(d_entry.get("weight_count") or (1 if weight_list else 0))
+            elif sub_type == 507:
+                weight_list = drop_entry['weight']
+                total_weight = sum(row[2] for row in weight_list)
+                for _ in range(count):
+                    # 概率未命中直接跳过；两字段旧配置表示必得，不会接住三字段的失败分支。
+                    for reward in drop_entry['base'] + drop_entry['random']:
+                        if len(reward) == 3 and reward[2] < 100 and random.randint(1, 100) > reward[2]:
+                            continue
+                        rid, rnum = reward[:2]
+                        all_items_to_grant.append((rid, rnum))
+                        raw_drops.append({"id": rid, "num": rnum, "time_valid": 0})
+                    if weight_list and weight_count > 0:
+                        for _ in range(weight_count):
+                            pick = random.randint(1, total_weight)
+                            acc = 0
+                            for wid, wnum, weight in weight_list:
+                                acc += weight
+                                if pick <= acc:
+                                    all_items_to_grant.append((wid, wnum))
+                                    raw_drops.append({"id": wid, "num": wnum, "time_valid": 0})
+                                    break
 
-                    for _ in range(count):
-                        # 1. 保底掉落
-                        for b in base_list:
-                            if len(b) >= 3 and b[2] < 100 and random.randint(1, 100) > b[2]:
-                                continue
-                            bid, bnum = int(b[0]), int(b[1])
-                            all_items_to_grant.append((bid, bnum))
-                            raw_drops.append({"id": bid, "num": bnum, "time_valid": 0})
-
-                        # 2. 独立概率随机掉落
-                        for r in rand_list:
-                            if len(r) >= 3 and (r[2] >= 100 or random.randint(1, 100) <= r[2]):
-                                rid, rnum = int(r[0]), int(r[1])
-                                all_items_to_grant.append((rid, rnum))
-                                raw_drops.append({"id": rid, "num": rnum, "time_valid": 0})
-                            elif len(r) >= 2:
-                                rid, rnum = int(r[0]), int(r[1])
-                                all_items_to_grant.append((rid, rnum))
-                                raw_drops.append({"id": rid, "num": rnum, "time_valid": 0})
-
-                        # 3. 权重抽取掉落
-                        if weight_list and w_count > 0:
-                            valid_weights = [w for w in weight_list if len(w) >= 3]
-                            total_w = sum(int(w[2]) for w in valid_weights)
-                            if total_w > 0:
-                                for _ in range(w_count):
-                                    pick = random.randint(1, total_w)
-                                    acc = 0
-                                    for w in valid_weights:
-                                        acc += int(w[2])
-                                        if pick <= acc:
-                                            wid, wnum = int(w[0]), int(w[1])
-                                            all_items_to_grant.append((wid, wnum))
-                                            raw_drops.append({"id": wid, "num": wnum, "time_valid": 0})
-                                            break
-
-            # 分支 3: 固定礼包 / 复合材料包 (sub_type in (501, 506, 518) 或 type == 5)
-            elif (sub_type in (501, 506, 518) or itype == 5) and param and isinstance(param, list):
-                if len(param) > 0 and isinstance(param[0], (list, tuple)):
-                    for sub in param:
-                        sid = int(sub[0])
-                        snum = int(sub[1]) * count
-                        all_items_to_grant.append((sid, snum))
-                        raw_drops.append({"id": sid, "num": snum, "time_valid": 0})
-                elif len(param) >= 2 and isinstance(param[0], int) and isinstance(param[1], int):
-                    sid = int(param[0])
-                    snum = int(param[1]) * count
-                    all_items_to_grant.append((sid, snum))
-                    raw_drops.append({"id": sid, "num": snum, "time_valid": 0})
-
-            # 分支 4: 体力道具 / 货币好感道具 (sub_type in (401, 402, 403, 404))
-            elif sub_type in (401, 402, 403, 404) and param:
-                if isinstance(param, list) and len(param) > 0:
-                    first = param[0]
-                    if isinstance(first, (list, tuple)):
-                        for entry_p in param:
-                            cid = int(entry_p[0])
-                            cnum = int(entry_p[1]) * count
-                            all_items_to_grant.append((cid, cnum))
-                            raw_drops.append({"id": cid, "num": cnum, "time_valid": 0})
-                    elif len(param) >= 2 and isinstance(param[0], int) and isinstance(param[1], int):
-                        cid = int(param[0])
-                        cnum = int(param[1]) * count
-                        all_items_to_grant.append((cid, cnum))
-                        raw_drops.append({"id": cid, "num": cnum, "time_valid": 0})
+            # 分支 3/4: 已验证的固定礼包、体力及货币奖励。
+            elif fixed_rewards is not None:
+                for rid, per_item in fixed_rewards:
+                    rnum = per_item * count
+                    all_items_to_grant.append((rid, rnum))
+                    raw_drops.append({"id": rid, "num": rnum, "time_valid": 0})
 
             # 分支 5: 换装兑换券 / 限时体验卡 (type == 14 或 sub_type == 407)
             elif (itype == 14 or sub_type == 407) and param:

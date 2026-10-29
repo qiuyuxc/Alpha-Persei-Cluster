@@ -6212,6 +6212,19 @@ class ActivityPointTierRewardOp(Operation):
 
 # ----------------- 1. 梦境再构 (Boss Challenge) -----------------
 
+def _boss_challenge_state_frames(ctx, result, *, normal=False, include_mode=False):
+    data = result['boss_data']
+    required = [(45201, data[0])] if include_mode else []
+    required.append((45001, data[1]) if normal else (45101, data[2]))
+    frames = []
+    for cmd, body in required:
+        payload = ctx.codec_encode('sc_' + str(cmd), body)
+        if not payload:
+            raise ValueError(f'必要梦境状态刷新为空: {cmd}')
+        frames.append(DownFrame(cmd, payload))
+    return frames
+
+
 @operation
 class BossChallengeSelectModeOp(Operation):
     """cs_45202 {select: mode} -> sc_45203 {result: 0} 切换普通/进阶模式"""
@@ -6251,24 +6264,13 @@ class BossChallengeResetHardModeOp(Operation):
     sc = 45205
 
     def apply(self, data, ctx):
-        if ctx.db and hasattr(ctx.db, "reset_boss_challenge_advance_all"):
-            ctx.db.reset_boss_challenge_advance_all(self.uid)
-        return {"result": 0}
+        import weekly_challenge_service
+        return weekly_challenge_service.reset_boss_challenge_advance(ctx, self.uid)
 
     def respond(self, result, data, ctx):
         payload = ctx.codec_encode("sc_45205", {"result": 0}) or b"\x08\x00"
         ctx.log("cs_45204 -> 梦境再构重置进阶梦境")
-        extra = []
-        try:
-            import weekly_challenge_service
-            sc_201, _, sc_101 = weekly_challenge_service.get_boss_challenge_data(self.uid, ctx.db)
-            p201 = ctx.codec_encode("sc_45201", sc_201)
-            if p201: extra.append(DownFrame(45201, p201))
-            p101 = ctx.codec_encode("sc_45101", sc_101)
-            if p101: extra.append(DownFrame(45101, p101))
-        except Exception:
-            pass
-        return extra + [DownFrame(self.sc, payload)]
+        return _boss_challenge_state_frames(ctx, result, include_mode=True) + [DownFrame(self.sc, payload)]
 
 
 @operation
@@ -6304,23 +6306,14 @@ class BossChallengeResetHardBossOp(Operation):
     sc = 45107
 
     def apply(self, data, ctx):
+        import weekly_challenge_service
         bid = int(data.get("boss_id") or 0)
-        if ctx.db and hasattr(ctx.db, "reset_boss_challenge_advance_boss"):
-            ctx.db.reset_boss_challenge_advance_boss(self.uid, bid)
-        return {"result": 0}
+        return weekly_challenge_service.reset_boss_challenge_advance(ctx, self.uid, bid)
 
     def respond(self, result, data, ctx):
         payload = ctx.codec_encode("sc_45107", {"result": 0}) or b"\x08\x00"
         ctx.log(f"cs_45106 -> 梦境再构重置进阶首领 boss_id={data.get('boss_id')}")
-        extra = []
-        try:
-            import weekly_challenge_service
-            _, _, sc_101 = weekly_challenge_service.get_boss_challenge_data(self.uid, ctx.db)
-            p101 = ctx.codec_encode("sc_45101", sc_101)
-            if p101: extra.append(DownFrame(45101, p101))
-        except Exception:
-            pass
-        return [DownFrame(self.sc, payload)] + extra
+        return _boss_challenge_state_frames(ctx, result) + [DownFrame(self.sc, payload)]
 
 
 @operation
@@ -6370,20 +6363,7 @@ class BossChallengeClaimStarRewardOp(Operation):
     def apply(self, data, ctx):
         import weekly_challenge_service
         star = int(data.get("star") or 0)
-        area_id = 4
-        if ctx.db:
-            try:
-                prog = ctx.db.get_boss_challenge_progress(self.uid)
-                if prog and prog.get("area_id"):
-                    area_id = int(prog["area_id"])
-            except Exception:
-                pass
-        items = weekly_challenge_service.get_boss_challenge_reward_items(1, star, area_id=area_id)
-        for it in items:
-            _item_add(ctx, self.uid, it["id"], it["num"])
-        if ctx.db and hasattr(ctx.db, "claim_boss_challenge_reward"):
-            ctx.db.claim_boss_challenge_reward(self.uid, 1, star)
-        return {"items": items}
+        return weekly_challenge_service.claim_boss_challenge_rewards(ctx, self.uid, 1, star)
 
     def respond(self, result, data, ctx):
         payload = ctx.codec_encode("sc_45005", {
@@ -6391,15 +6371,7 @@ class BossChallengeClaimStarRewardOp(Operation):
             "item_list": result.get("items", [])
         }) or b"\x08\x00"
         ctx.log(f"cs_45004 -> 梦境再构领取星级奖励 star={data.get('star')} 奖励={result.get('items')}")
-        extra = []
-        try:
-            import weekly_challenge_service
-            _, sc_001, _ = weekly_challenge_service.get_boss_challenge_data(self.uid, ctx.db)
-            p001 = ctx.codec_encode("sc_45001", sc_001)
-            if p001: extra.append(DownFrame(45001, p001))
-        except Exception:
-            pass
-        return _refresh_frames(ctx, self.uid) + extra + [DownFrame(self.sc, payload)]
+        return _refresh_frames(ctx, self.uid) + _boss_challenge_state_frames(ctx, result, normal=True) + [DownFrame(self.sc, payload)]
 
 
 @operation
@@ -6411,22 +6383,7 @@ class BossChallengeClaimPointRewardOp(Operation):
     def apply(self, data, ctx):
         import weekly_challenge_service
         point = int(data.get("point") or 0)
-        mode_id = 102
-        if ctx.db:
-            try:
-                prog = ctx.db.get_boss_challenge_progress(self.uid)
-                if prog and prog.get("mode") in (101, 102):
-                    mode_id = int(prog["mode"])
-                elif prog and int(prog.get("mode") or 0) == 1:
-                    mode_id = 101
-            except Exception:
-                pass
-        items = weekly_challenge_service.get_boss_challenge_reward_items(2, point, mode_id=mode_id)
-        for it in items:
-            _item_add(ctx, self.uid, it["id"], it["num"])
-        if ctx.db and hasattr(ctx.db, "claim_boss_challenge_reward"):
-            ctx.db.claim_boss_challenge_reward(self.uid, 2, point)
-        return {"items": items}
+        return weekly_challenge_service.claim_boss_challenge_rewards(ctx, self.uid, 2, point)
 
     def respond(self, result, data, ctx):
         payload = ctx.codec_encode("sc_45103", {
@@ -6434,15 +6391,7 @@ class BossChallengeClaimPointRewardOp(Operation):
             "item_list": result.get("items", [])
         }) or b"\x08\x00"
         ctx.log(f"cs_45102 -> 梦境再构领取积分奖励 point={data.get('point')} 奖励={result.get('items')}")
-        extra = []
-        try:
-            import weekly_challenge_service
-            _, _, sc_101 = weekly_challenge_service.get_boss_challenge_data(self.uid, ctx.db)
-            p101 = ctx.codec_encode("sc_45101", sc_101)
-            if p101: extra.append(DownFrame(45101, p101))
-        except Exception:
-            pass
-        return _refresh_frames(ctx, self.uid) + extra + [DownFrame(self.sc, payload)]
+        return _refresh_frames(ctx, self.uid) + _boss_challenge_state_frames(ctx, result) + [DownFrame(self.sc, payload)]
 
 
 
@@ -6455,62 +6404,7 @@ class BossChallengeClaimAllPointRewardOp(Operation):
 
     def apply(self, data, ctx):
         import weekly_challenge_service
-        cat = weekly_challenge_service.get_boss_catalog()
-        modes = cat.get("advance_modes", {})
-        
-        mode_id = 102
-        if ctx.db:
-            try:
-                prog = ctx.db.get_boss_challenge_progress(self.uid)
-                if prog and prog.get("mode") in (101, 102):
-                    mode_id = int(prog["mode"])
-                elif prog and int(prog.get("mode") or 0) == 1:
-                    mode_id = 101
-            except Exception:
-                pass
-                
-        m_info = modes.get(str(mode_id), modes.get(mode_id, {}))
-        all_rewards = m_info.get("rewards", [])
-        
-        # 计算当前玩家进阶总分（去重求各首领最高分之和）
-        total_score = 0
-        claimed_ids = set()
-        if ctx.db:
-            try:
-                score_rows = ctx.db.query("SELECT boss_id, score FROM boss_challenge_advance WHERE uid=?", (self.uid,))
-                if not score_rows:
-                    score_rows = ctx.db.query("SELECT boss_id, score FROM boss_challenge_scores WHERE uid=?", (self.uid,))
-                b_scores = {}
-                for sr in score_rows:
-                    bid = int(sr.get("boss_id") or 0)
-                    b_scores[bid] = max(b_scores.get(bid, 0), int(sr.get("score") or 0))
-                total_score = sum(b_scores.values())
-                
-                reward_rows = ctx.db.query("SELECT reward_id FROM boss_challenge_claimed_rewards WHERE uid=? AND reward_type=2", (self.uid,))
-                for rr in reward_rows:
-                    claimed_ids.add(int(rr["reward_id"]))
-            except Exception:
-                pass
-                
-        # 汇总所有满足 point <= total_score 且未领取的奖励
-        merged_items = {}
-        new_claimed = []
-        for rew in all_rewards:
-            p_need = int(rew.get("point") or 0)
-            if p_need not in claimed_ids and total_score >= p_need:
-                new_claimed.append(p_need)
-                for d in rew.get("drops", []):
-                    iid, inum = int(d[0]), int(d[1])
-                    merged_items[iid] = merged_items.get(iid, 0) + inum
-
-        out_items = [{"id": k, "num": v} for k, v in merged_items.items()]
-        for it in out_items:
-            _item_add(ctx, self.uid, it["id"], it["num"])
-            
-        if ctx.db and hasattr(ctx.db, "claim_all_boss_challenge_point_rewards") and new_claimed:
-            ctx.db.claim_all_boss_challenge_point_rewards(self.uid, new_claimed)
-            
-        return {"items": out_items}
+        return weekly_challenge_service.claim_boss_challenge_rewards(ctx, self.uid, 2)
 
     def respond(self, result, data, ctx):
         payload = ctx.codec_encode("sc_45113", {
@@ -6518,15 +6412,7 @@ class BossChallengeClaimAllPointRewardOp(Operation):
             "item_list": result.get("items", [])
         }) or b"\x08\x00"
         ctx.log(f"cs_45112 -> 梦境再构一键领取积分奖励 奖励={result.get('items')}")
-        extra = []
-        try:
-            import weekly_challenge_service
-            _, _, sc_101 = weekly_challenge_service.get_boss_challenge_data(self.uid, ctx.db)
-            p101 = ctx.codec_encode("sc_45101", sc_101)
-            if p101: extra.append(DownFrame(45101, p101))
-        except Exception:
-            pass
-        return _refresh_frames(ctx, self.uid) + extra + [DownFrame(self.sc, payload)]
+        return _refresh_frames(ctx, self.uid) + _boss_challenge_state_frames(ctx, result) + [DownFrame(self.sc, payload)]
 
 
 @operation
