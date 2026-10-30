@@ -102,7 +102,7 @@ def build_battle_equip_bytes(eq_row):
     return bytes(body)
 
 
-def build_battle_hero_bytes(db_conn, uid, hid):
+def build_battle_hero_bytes(db_conn, uid, hid, *, hero_type=1):
     """构建单个出战英雄 battle_hero_net_rec
 
     f1 = hero_base_info (HERO_BASE_INFO 完整养成)
@@ -262,7 +262,7 @@ def build_battle_hero_bytes(db_conn, uid, hid):
     # 1. 玩家自持角色：完整角色共用登录侧 DB 映射；未知配置角色保留原最小形态。
     exp = hero_codec.load_hero_expanded(hid)
     mapped_record = hero_codec.build_hero_net_rec_from_db(h, template=exp)
-    hero_type_val = 1
+    hero_type_val = hero_type
     if hero_codec.is_hero_payload_candidate(hid):
         hbi = next((it[2] for it in mapped_record if it[0] == 1 and it[1] == "m"), None)
         hbi_body = hero_codec.encode_expanded(hbi) if hbi else b""
@@ -324,7 +324,7 @@ def build_battle_hero_bytes(db_conn, uid, hid):
     return bytes(body)
 
 
-def build_player_net_rec_bytes(db_conn, uid, hero_ids):
+def build_player_net_rec_bytes(db_conn, uid, hero_ids, *, hero_details=None):
     """构建标准 player_net_rec 字节 (供 sc_54003 / sc_54039 使用)"""
     raw_conn = db_conn._conn() if hasattr(db_conn, "_conn") else db_conn
     cur = raw_conn.cursor()
@@ -340,10 +340,16 @@ def build_player_net_rec_bytes(db_conn, uid, hero_ids):
     pbi += _pb_varint(2, 0)  # channel
     pbi += _pb_varint(3, 0)  # server
 
+    details = {hero['hero_id']: hero for hero in (hero_details or [])}
     for hid in (hero_ids or []):
         if not hid:
             continue
-        bh_b = build_battle_hero_bytes(raw_conn, uid, hid)
+        hero = details.get(hid, {})
+        owner = hero.get('owner_id') if hero.get('hero_type') == 3 else uid
+        if hero.get('hero_type') == 3:
+            import social_service as social
+            social.require_assist(db_conn, uid, owner, hid)
+        bh_b = build_battle_hero_bytes(raw_conn, owner, hid, hero_type=hero.get('hero_type', 1))
         if bh_b:
             pbi += _pb_msg(4, bh_b)
 
@@ -360,9 +366,9 @@ def build_player_net_rec_bytes(db_conn, uid, hero_ids):
     return _pb_varint(1, uid) + _pb_msg(2, bytes(pbi)) + _pb_msg(3, pri)
 
 
-def build_sc_54003_dynamic(db_conn, uid, hero_ids):
+def build_sc_54003_dynamic(db_conn, uid, hero_ids, *, hero_details=None):
     """动态生成 sc_54003 战斗初始化完整下行报文"""
-    pi = build_player_net_rec_bytes(db_conn, uid, hero_ids)
+    pi = build_player_net_rec_bytes(db_conn, uid, hero_ids, hero_details=hero_details)
     # sc_54003 { f1 = player_info }
     return _pb_msg(1, pi)
 

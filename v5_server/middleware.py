@@ -1103,6 +1103,7 @@ def _parse_battle_common(req, ctx):
                     out["hero_details"].append({
                         "hero_id": int(hid),
                         "hero_type": int(h.get("hero_type") or 1),
+                        "owner_id": int(h.get("owner_id") or 0),
                     })
     except Exception:
         pass
@@ -1351,6 +1352,26 @@ def build_battle_result(bid, result, dest, clear_times=1, drops=None, heroes=Non
 
 def _settle_frames(ctx, uid, bid, result, dest, times=1, heroes=None, sweep=False, battle_info=None, stage_type=0, activity_id=0):
     """结算引擎：掉落计算 + 首通/重复奖励区分 + 体力扣减 + 熟练度/好感/经验成长 + 进度推进 → 返回 (battle_result dict, 附加帧列表)。"""
+    if stage_type == 32:
+        import guild_prepose
+        import json
+        import social_service as social
+        from social_protocol import frame
+        run, replay = guild_prepose.settle(ctx.db, uid, bid, result, battle_info or {}, int(time.time()))
+        br = build_battle_result(bid, run['result'], run['level_id'], heroes=json.loads(run['heroes']),
+                                 use_seconds=run['use_seconds'], star_ids=())
+        br['timestamp'] = run['finished_at']
+        extra = []
+        if not replay:
+            if run['result'] == 1:
+                from task_listener import _trigger_task_condition
+                # Preparation destinations are guild slots, not normal stage
+                # IDs. Only advance the generic "clear any stage" condition.
+                changed = _trigger_task_condition(ctx.db, uid, condition=402, delta=1)
+                if changed:
+                    extra.append(frame(28007, {'progress_list': changed}))
+            extra.append(frame(33001, social.boss_info(ctx.db, uid, now_ts=int(time.time()))))
+        return br, extra
     import random as _rs
     heroes = heroes or []
     times = max(1, int(times or 1))
@@ -2184,6 +2205,9 @@ def h_54030(req, ctx):
     自动持久化出战编队至 reserve_team 与 reserve_team_hero。
     """
     info = _parse_battle_common(req, ctx)
+    if info.get('type') in (32, 33):
+        import guild_prepose
+        guild_prepose.validate_start(ctx.db, req.uid, info, int(time.time()))
 
     # 多维变量 (stage_type == 52 或 dest 处于多维关卡区间) 且 cs_54030 中 heroes 为空时：
     # 必须从当前活跃的 polyhedron_run 中获取 fight_hero_id_list 出战英雄，供 sc_54003 组装！
@@ -2237,6 +2261,8 @@ def h_54030(req, ctx):
                             node_id=rogue_node_id,
                             cooperate_skill=info.get("cooperate_skill", 0),
                             mimir_info=info.get("mimir_info") or {})
+    if info.get('type') == 32:
+        guild_prepose.start(ctx.db, effective_uid, bid, info, int(time.time()))
 
     # 自动持久化出战编队（旧逻辑，已停用）：reserve_team 预设不再被出战数据污染，
     # 编队记录由下方 TEAM SERVER 关卡现役编队接管（sync_stage_battle_team 保留备回滚）
@@ -2273,10 +2299,18 @@ def h_54030(req, ctx):
     _p03 = None
     if ctx.db:
         try:
-            _p03 = battle_payload.build_sc_54003_dynamic(ctx.db, req.uid, info["heroes"])
+            if info.get('type') in (32, 33):
+                _p03 = battle_payload.build_sc_54003_dynamic(ctx.db, req.uid, info['heroes'],
+                                                            hero_details=info.get('hero_details'))
+            else:
+                _p03 = battle_payload.build_sc_54003_dynamic(ctx.db, req.uid, info['heroes'])
         except Exception as e:
+            if info.get('type') in (32, 33):
+                raise
             ctx.log(f"[battle] 动态 sc_54003 构建异常: {e}")
     if not _p03:
+        if info.get('type') in (32, 33):
+            raise ValueError('家族战斗英雄数据生成失败')
         _p03_tpl = ctx.battle_03_payload()
         if _p03_tpl:
             _p03 = rewrite_54003_heroes(info["heroes"], _p03_tpl)
@@ -2315,6 +2349,14 @@ def h_54032(req, ctx):
     """
     bid = _pkt_field1_varint({"payload": req.payload}) or ctx.battle_id[0] or 1
     session = get_battle_session(bid) or {}
+    if not session and ctx.db is not None:
+        import guild_prepose
+        persisted = guild_prepose.find_run(ctx.db, req.uid, bid)
+        if persisted:
+            session = {'uid': req.uid, 'dest': persisted['level_id'], 'stage_type': 32}
+            if persisted['state'] == 1:
+                session['result_data'] = {'result': persisted['result'],
+                                          'info': {'battle_time': persisted['use_seconds'] * 1000}}
     dest = session.get("dest") or ctx.battle_stage[0] or 0
     heroes = session.get("heroes") or []
     times = session.get("battle_times") or 1
@@ -2338,7 +2380,12 @@ def h_54032(req, ctx):
         result = int(res_obj or 1)
         b_info = {}
 
-    if "br" in session:
+    if stage_type == 32:
+        # A failed SQL/packet transaction must not turn the in-memory cache into
+        # a successful replay. The committed run ledger decides idempotency.
+        br, extra = _settle_frames(ctx, req.uid, bid, result, dest, times=times, heroes=heroes,
+                                  battle_info=b_info, stage_type=stage_type, activity_id=activity_id)
+    elif "br" in session:
         # 只重放不可变结算回执。extra 含库存/角色/图鉴/活动等绝对状态，
         # 再次发送会覆盖此后发生的变化；更新状态也不能重新执行结算发奖。
         # 兼容旧会话中仍有 extra 的情况，但不再读取或重发它。
@@ -2348,6 +2395,8 @@ def h_54032(req, ctx):
         session["br"] = br
     _p33 = ctx.codec_encode("sc_54033", {"result": 0, "battle_result": br}) or b"\x08\x00"
     ctx.log(f"cs_54032 -> 结算 bid={bid} result={result} dest={dest} 掉落组={len(br['all_drop_list'])} 三星={br.get('star_list')}")
+    if stage_type == 32:
+        return CSResponse([DownFrame(54033, _p33)] + extra)
     return CSResponse(extra + [DownFrame(54033, _p33)])
 
 

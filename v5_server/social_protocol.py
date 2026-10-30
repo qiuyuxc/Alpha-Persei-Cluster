@@ -58,12 +58,24 @@ def own_guild_frame(db, uid, now):
     return frame(31001, body)
 
 
-def _guild_changed(db, guild_id, now, exclude_uid=None):
+def guild_tasks_frame(db, uid):
+    from fresh_profile import task_phases
+    tasks = db.query('SELECT task_id FROM task WHERE uid=?', (uid,))
+    phases = task_phases(db, uid, tasks)
+    rows = db.query('SELECT t.* FROM task t JOIN task_cfg c ON c.task_id=t.task_id '
+                    'WHERE t.uid=? AND c.task_type=11 AND COALESCE(c.activity_id,0)=0', (uid,))
+    return frame(28001, {'send_type': 1, 'newbie_phase': phases[3], 'assignment_phase': phases[4],
+                        'assignment_list': [dict(id=r['task_id'], progress=r['progress'] or 0,
+                            complete_flag=int(bool(r['claimed_ts']) or bool(r['complete_flag'])),
+                            expired_timestamp=r['expired_ts'] or 0) for r in rows]})
+
+
+def _guild_changed(db, guild_id, now, exclude_uid=None, events=()):
     from server_net import push_gm_frames
     for uid in recipients(db, 3, guild_id):
         if uid != exclude_uid:
             try:
-                push_gm_frames(uid, [own_guild_frame(db, uid, now), request_frame(db, uid)])
+                push_gm_frames(uid, [*events, own_guild_frame(db, uid, now), request_frame(db, uid)])
             except Exception:
                 log.exception('公会数据推送失败，客户端可重新读取')
 
@@ -77,41 +89,65 @@ def request_frame(db, uid):
     return frame(31979, {'join_list': requests})
 
 
+def cancelled_requests(uid, guild_ids, events, changed, accepted_guild=None):
+    # Native sc_31979 only appends entries. Each removed request also needs
+    # sc_31999, including applications cancelled by joining/creating a guild.
+    for gid in guild_ids:
+        if gid != accepted_guild:
+            events.setdefault(gid, []).append(frame(31999, {'id': uid, 'type': 3}))
+            changed.add(gid)
+
+
 def _claim_reward(db, ctx, uid, data, now):
     import guild_cycle
-    if guild_cycle.phase(now) != 'challenge':
-        raise ValueError('裂隙开放阶段才能领取首领奖励')
+    import guild_prepose
     gid = social.integer(data.get('club_id'), '公会编号', 1, 4294967295)
     kind = social.integer(data.get('type'), '奖励类型', 1, 3)
     award = social.integer(data.get('award_id'), '奖励档位', 1, 4294967295)
-    info = social.boss_info(db, uid, gid, now)['info']
-    difficulty = info['difficulty']
-    cfg = social.CATALOG['bosses'][str(difficulty)]
+    social.require_member(db, uid, gid)
     if kind == 3:
-        raise ValueError('需要本人完成前置挑战')
-    options = cfg['personal_reward'] if kind == 1 else cfg['reward']
-    reward = next((r[1] for r in options if r[0] == award), None)
-    score = info['personal_score'] if kind == 1 else info['collective_damage_award']
-    if not reward or score < award:
-        raise ValueError('尚未达到奖励条件')
-    week = social.get_weekly_mon_5am_ts(now)
-    key = (uid, week, difficulty, kind, award)
-    if db.query('SELECT 1 FROM social_reward_claims WHERE uid=? AND week_id=? AND difficulty=? AND kind=? AND award_id=?', key):
-        raise ValueError('奖励已领取')
+        if guild_cycle.phase(now) != 'prepare' or award != 1:
+            raise ValueError('前置挑战首通奖励档位或阶段无效')
+        daily = guild_prepose.daily(db, uid, now)
+        if not daily['clear_times'] or daily['claimed']:
+            raise ValueError('需要本人完成前置挑战，且今日尚未领取奖励')
+        reward = social.CATALOG['prepose']['1']['personal_reward']
+    else:
+        if guild_cycle.phase(now) != 'challenge':
+            raise ValueError('裂隙开放阶段才能领取首领奖励')
+        info = social.boss_info(db, uid, gid, now)['info']
+        difficulty = info['difficulty']
+        cfg = social.CATALOG['bosses'][str(difficulty)]
+        options = cfg['personal_reward'] if kind == 1 else cfg['reward']
+        reward = next((r[1] for r in options if r[0] == award), None)
+        score = info['personal_score'] if kind == 1 else info['collective_damage_award']
+        if not reward or score < award:
+            raise ValueError('尚未达到奖励条件')
+        week = social.get_weekly_mon_5am_ts(now)
+        key = (uid, week, difficulty, kind, award)
+        if db.query('SELECT 1 FROM social_reward_claims WHERE uid=? AND week_id=? AND difficulty=? AND kind=? AND award_id=?', key):
+            raise ValueError('奖励已领取')
     from inventory_service import InventoryService
     import gm_actions
     for item, count in reward:
         gm_actions.require_item(db, item, count)
     summary = InventoryService.grant_items(ctx, uid, reward, source='guild_boss')
-    frames = gm_actions.asset_frames(ctx, summary)
-    db.execute('INSERT INTO social_reward_claims VALUES(?,?,?,?,?,?,?)', (*key, gid, now))
-    return frames
+    if kind == 3:
+        db.execute('UPDATE social_prepose_daily SET claimed=1 WHERE uid=? AND day_id=?',
+                   (uid, social.get_daily_5am_ts(now)))
+    else:
+        db.execute('INSERT INTO social_reward_claims VALUES(?,?,?,?,?,?,?)', (*key, gid, now))
+    import guild_contributions
+    guild_contributions.record_rift_claim(db, uid, gid, kind, reward, now,
+        day_id=social.get_daily_5am_ts(now), week_id=0 if kind==3 else week,
+        difficulty=0 if kind==3 else difficulty, award_id=award)
+    return gm_actions.asset_frames(ctx, summary)
 
 
 def dispatch(req, ctx):
     db, uid, cmd, now = ctx.db, int(req.uid), int(req.cmd), int(time.time())
     ack = cmd + 1
-    notifications, guild_changed, direct = [], set(), []
+    notifications, guild_changed, direct, guild_events = [], set(), [], {}
     checkpoint = checkpoint_notifications(ctx)
     try:
         social.initialize(db, now)
@@ -172,18 +208,30 @@ def dispatch(req, ctx):
                      'is_requested': int(bool(db.query('SELECT 1 FROM social_requests WHERE guild_id=? AND uid=?', (g['id'], uid))))}
                     for g in db.query('SELECT id FROM social_guilds ORDER BY id LIMIT 30')]
             elif cmd == 31008:
+                previous = {r['guild_id'] for r in db.query('SELECT guild_id FROM social_requests WHERE uid=?', (uid,))}
                 gid = social.create_guild(db, uid, data.get('name'), data.get('icon'), data.get('notice'), now)
+                cancelled_requests(uid, previous, guild_events, guild_changed)
                 guild_changed.add(gid)
-                extra = [own_guild_frame(db, uid, now), frame(33001, social.boss_info(db, uid, gid, now))]
+                extra = [own_guild_frame(db, uid, now), guild_tasks_frame(db, uid),
+                         frame(33001, social.boss_info(db, uid, gid, now))]
             elif cmd == 31010:
                 gid = social.integer(data.get('id'), '公会编号', 1, 4294967295)
+                previous = {r['guild_id'] for r in db.query('SELECT guild_id FROM social_requests WHERE uid=?', (uid,))}
                 if social.join_guild(db, uid, gid, now):
-                    extra = [own_guild_frame(db, uid, now), frame(33001, social.boss_info(db, uid, gid, now))]
+                    extra = [own_guild_frame(db, uid, now), guild_tasks_frame(db, uid),
+                             frame(33001, social.boss_info(db, uid, gid, now))]
+                    guild_events[gid] = [frame(31985, {'member': social.member_wire(db, social.membership(db, uid), now)})]
+                    if gid in previous:
+                        guild_events[gid].append(frame(31999, {'id': uid, 'type': 2}))
+                    cancelled_requests(uid, previous, guild_events, guild_changed, gid)
                 guild_changed.add(gid)
             elif cmd == 31012:
                 gid = social.integer(data.get('id'), '公会编号', 1, 4294967295)
-                social.leave_guild(db, uid, gid)
+                successor = social.leave_guild(db, uid, gid)
                 extra = [frame(31989, {'id': uid})]
+                guild_events[gid] = list(extra)
+                if successor:
+                    guild_events[gid].append(frame(31997, {'id': successor['uid'], 'nick': social.profile(db, successor['uid'])['nick']}))
                 guild_changed.add(gid)
             elif cmd in (31014, 31016):
                 member = social.require_member(db, uid, manager=True)
@@ -194,22 +242,31 @@ def dispatch(req, ctx):
                     raise ValueError('无法操作该成员')
                 other = rows[0]
                 if cmd == 31014:
+                    import guild_prepose
+                    guild_prepose.cancel(db, target, gid)
                     db.execute('DELETE FROM social_members WHERE guild_id=? AND uid=?', (gid, target))
                     if not other['is_bot']:
                         db.execute('UPDATE users SET club_id=0,club_post=0 WHERE uid=?', (target,))
                         direct.append((target, frame(31989, {'id': target})))
                     # Notify the removed member after the transaction.
                     extra.append(frame(31989, {'id': target}))
+                    guild_events[gid] = list(extra)
                 else:
                     if member['post'] != 1:
                         raise ValueError('需要会长权限')
                     post = social.integer(data.get('post'), '职位', 1, 3)
+                    if post == 1 and other['is_bot']:
+                        raise ValueError('支援人机不能接任真人家族会长')
                     if post == 1:
                         db.execute('UPDATE social_members SET post=3 WHERE guild_id=? AND post=1', (gid,))
                         db.execute('UPDATE users SET club_post=3 WHERE uid=?', (uid,))
                     db.execute('UPDATE social_members SET post=? WHERE guild_id=? AND uid=?', (post, gid, target))
                     if not other['is_bot']:
                         db.execute('UPDATE users SET club_post=? WHERE uid=?', (post, target))
+                    changed = (frame(31997, {'id': target, 'nick': social.profile(db, target)['nick']}) if post == 1
+                               else frame(31995 if post == 2 else 31993, {'id': target}))
+                    extra.append(changed)
+                    guild_events[gid] = [changed]
                 extra.append(own_guild_frame(db, uid, now))
                 guild_changed.add(gid)
             elif cmd in (31018, 31022, 31024, 31026):
@@ -217,7 +274,8 @@ def dispatch(req, ctx):
                 gid = member['guild_id']
                 if cmd == 31018:
                     cfg = data.get('setting') or {}
-                    switch = social.integer(cfg.get('examine_recruit_join_request_switch'), '入会审核', 0, 1)
+                    switch = social.integer(cfg.get('examine_recruit_join_request_switch'), '入会方式',
+                                             social.JOIN_FREE, social.JOIN_CLOSED)
                     level = social.integer(cfg.get('join_request_limit'), '入会等级', 1, 100)
                     db.execute('UPDATE social_guilds SET examine_switch=?,join_min_level=? WHERE id=?', (switch, level, gid))
                 elif cmd == 31022:
@@ -233,26 +291,42 @@ def dispatch(req, ctx):
                 guild_changed.add(gid)
             elif cmd == 31028:
                 gid = social.integer(data.get('id'), '公会编号', 1, 4294967295)
-                if db.query('SELECT 1 FROM social_guilds WHERE id=?', (gid,)):
-                    response['club_base_info'] = social.guild_wire(db, gid, uid, now)
+                response['club_base_info'] = social.guild_wire(db, gid, uid, now)
             elif cmd == 31032:
                 member = social.require_member(db, uid, manager=True)
                 gid = member['guild_id']
                 target = social.integer(data.get('id'), '成员编号', 1, 4294967295)
                 action = social.integer(data.get('type'), '处理方式', 1, 2)
-                if not db.query('SELECT 1 FROM social_requests WHERE guild_id=? AND uid=?', (gid, target)):
+                previous = {r['guild_id'] for r in db.query('SELECT guild_id FROM social_requests WHERE uid=?', (target,))}
+                existing = social.membership(db, target)
+                replay = action == 1 and existing is not None and existing['guild_id'] == gid
+                if gid not in previous and not replay:
                     raise ValueError('申请不存在')
-                if action == 1:
+                removed = frame(31999, {'id': target, 'type': 2 if action == 1 else 3})
+                extra.append(removed)
+                guild_events[gid] = [removed]
+                if replay:
+                    extra.append(own_guild_frame(db, uid, now))
+                    ctx.log(f'cs_31032 已入会申请重复确认 uid={uid} target={target}', 'INFO')
+                elif action == 1:
                     social.join_guild(db, target, gid, now, approved=True)
                     direct.append((target, frame(33001, social.boss_info(db, target, gid, now))))
-                db.execute('DELETE FROM social_requests WHERE guild_id=? AND uid=?', (gid, target))
+                    direct.append((target, guild_tasks_frame(db, target)))
+                    added = frame(31985, {'member': social.member_wire(db, social.membership(db, target), now)})
+                    extra.extend([added, own_guild_frame(db, uid, now)])
+                    guild_events[gid].append(added)
+                if action == 1:
+                    db.execute('DELETE FROM social_requests WHERE uid=?', (target,))
+                    cancelled_requests(target, previous, guild_events, guild_changed, gid)
+                else:
+                    db.execute('DELETE FROM social_requests WHERE guild_id=? AND uid=?', (gid, target))
                 extra.append(request_frame(db, uid))
                 guild_changed.add(gid)
             elif cmd == 33000:
                 response = social.boss_info(db, uid, social.integer(data.get('club_id'), '公会编号', 1, 4294967295), now)
             elif cmd == 33002:
-                social.require_member(db, uid, social.integer(data.get('club_id'), '公会编号', 1, 4294967295))
-                response['assist_info_list'] = []
+                response['assist_info_list'] = social.assist_info(
+                    db, uid, social.integer(data.get('club_id'), '公会编号', 1, 4294967295))
             elif cmd == 33004:
                 import guild_cycle
                 if guild_cycle.phase(now) != 'prepare':
@@ -280,7 +354,7 @@ def dispatch(req, ctx):
                 if len(heroes) > 3 or len(set(heroes)) != len(heroes):
                     raise ValueError('助战角色数量无效')
                 for hid in heroes:
-                    if not db.query('SELECT 1 FROM hero WHERE uid=? AND id=?', (uid, hid)):
+                    if not db.query('SELECT 1 FROM hero WHERE uid=? AND id=? AND unlock=1', (uid, hid)):
                         raise ValueError('尚未拥有该角色')
                 import json
                 db.execute('UPDATE social_members SET assist_heroes=? WHERE guild_id=? AND uid=?', (json.dumps(heroes), gid, uid))
@@ -299,7 +373,7 @@ def dispatch(req, ctx):
                 log.exception('聊天已保存，在线推送失败')
         for gid in guild_changed:
             try:
-                _guild_changed(db, gid, now, exclude_uid=uid)
+                _guild_changed(db, gid, now, exclude_uid=uid, events=guild_events.get(gid, ()))
             except Exception:
                 log.exception('公会变更已提交，通知失败')
         for target, packet in direct:

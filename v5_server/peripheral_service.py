@@ -629,14 +629,42 @@ class PeripheralService:
             "hero_oath_display": []
         }
 
-    def get_foreign_hero_info(self, target_uid):
+    def get_foreign_hero_info(self, target_uid, requester_uid=None, info_type=1):
         """他人名片英雄列表查询：cs_32020 -> sc_32021。"""
         target_uid = int(target_uid or 0)
+        if info_type not in (1, 2) or not self.db.query('SELECT 1 FROM users WHERE uid=?', (target_uid,)):
+            raise OperationError(2, '玩家或英雄查询类型无效')
+        import social_service as social
+        if info_type == 2:
+            member = social.require_member(self.db, requester_uid)
+            other = social.require_member(self.db, target_uid, member['guild_id'])
+            allowed = set(json.loads(other['assist_heroes']))
+        else:
+            allowed = None
+        from battle_payload import build_battle_hero_bytes
+        from codec import decode
+        heroes, oaths = [], []
+        for row in self.db.query('SELECT * FROM hero WHERE uid=? AND unlock=1 ORDER BY id', (target_uid,)):
+            if allowed is not None and row['id'] not in allowed:
+                continue
+            hero = decode(build_battle_hero_bytes(self.db._conn(), target_uid, row['id']), 'battle_hero_net_rec')
+            # The foreign hero's p32 equipment ID is an EquipCfg prefab, while
+            # p54 includes both the instance ID and the prefab ID.
+            hero['equip_list'] = [dict(equip_id=e['prefab_id'], exp=e.get('exp', 0),
+                                       now_break_level=e.get('now_break_level', 0),
+                                       enchant_slot_list=e.get('enchant_slot_list', []), race=e.get('race', 0))
+                                  for e in hero.get('equip_list', [])]
+            chips = json.loads(row.get('chip_state') or '{}')
+            hero['using_hero_chip'] = [chips.get(str(i), 0) for i in range(1, 5)] if isinstance(chips, dict) else chips
+            heroes.append(hero)
+            oaths.append(social.oath_display(self.db, target_uid, row['id']))
+        if info_type == 2 and not heroes:
+            raise OperationError(2, '该成员已没有可用助战角色')
         return {
             "result": 0,
             "user_id": target_uid,
-            "hero_list": [],
-            "hero_oath_display": []
+            "hero_list": heroes,
+            "hero_oath_display": oaths
         }
 
     # ------------------------------------------------------------------
@@ -1607,7 +1635,7 @@ class GetForeignHeroInfoOp(Operation):
         ctx.uid = self.uid
         target_uid = int(data.get("user_id") or 0)
         service = PeripheralService.get_instance(ctx.db)
-        heroes = service.get_foreign_hero_info(target_uid)
+        heroes = service.get_foreign_hero_info(target_uid, self.uid, int(data.get('type', 1)))
         return heroes
 
     def respond(self, result, data, ctx):

@@ -693,6 +693,10 @@
       "user_num_max": 55
     }
   },
+  "preparation_rules": {
+    "daily_limit": 3,
+    "score": [4000, 300, 12000]
+  },
   "prepose": {
     "1": {
       "name": "破碎边界",

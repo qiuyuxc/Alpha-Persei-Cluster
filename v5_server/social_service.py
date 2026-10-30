@@ -14,6 +14,9 @@ KEY = 'gm.social_npcs.v1'
 DEFAULT_GUILD = 700000001
 DAY = 86400
 SLOT = 900
+JOIN_FREE = 1
+JOIN_REVIEW = 2
+JOIN_CLOSED = 3
 CATALOG = json.loads(Path(__file__).with_name('social_catalog.json').read_text())
 DEFAULTS = dict(enabled=True, basic_enabled=True, reply_enabled=True, ai_enabled=True,
                 guild_progress_enabled=True, chatter_minutes=15, reply_minutes=10,
@@ -102,6 +105,10 @@ def initialize(db, now_ts=None):
     if found:
         import guild_cycle
         guild_cycle.initialize(db, now_ts)
+        import guild_prepose
+        guild_prepose.initialize(db)
+        import guild_contributions
+        guild_contributions.initialize(db, now_ts)
         return json.loads(found[0]['value'])
     now = int(time.time()) if now_ts is None else int(now_ts)
     with db.transaction(immediate=True):
@@ -109,6 +116,10 @@ def initialize(db, now_ts=None):
         if found:
             import guild_cycle
             guild_cycle.initialize(db, now)
+            import guild_prepose
+            guild_prepose.initialize(db)
+            import guild_contributions
+            guild_contributions.initialize(db, now)
             return json.loads(found[0]['value'])
         for statement in SCHEMA.split(';'):
             if statement.strip():
@@ -144,6 +155,10 @@ def initialize(db, now_ts=None):
         _append(db, 1, 1, bots[0]['uid'], '值班支援小队已就位，欢迎来到公屏。', now, is_bot=True)
         import guild_cycle
         guild_cycle.initialize(db, now)
+        import guild_prepose
+        guild_prepose.initialize(db)
+        import guild_contributions
+        guild_contributions.initialize(db, now)
     return dict(DEFAULTS)
 
 
@@ -194,6 +209,40 @@ def require_member(db, uid, guild_id=None, manager=False):
     if manager and member['post'] not in (1, 2):
         raise ValueError('需要公会管理权限')
     return member
+
+
+def require_assist(db, uid, owner, hero_id):
+    member = require_member(db, uid)
+    other = require_member(db, owner, member['guild_id'])
+    if owner == uid or hero_id not in json.loads(other['assist_heroes']):
+        raise ValueError('该角色未设为本家族助战')
+    rows = db.query('SELECT * FROM hero WHERE uid=? AND id=? AND unlock=1', (owner, hero_id))
+    if not rows:
+        raise ValueError('助战角色已不可用')
+    return rows[0]
+
+
+def oath_display(db, uid, hero_id):
+    rows = db.query('SELECT oath,nick FROM hero_oath WHERE uid=? AND hero_id=?', (uid, hero_id))
+    row = rows[0] if rows else {}
+    return dict(hero_id=hero_id, oath=bool(row.get('oath')), nick=row.get('nick') or '')
+
+
+def assist_info(db, uid, guild_id):
+    require_member(db, uid, guild_id)
+    result = []
+    for member in db.query('SELECT * FROM social_members WHERE guild_id=? AND is_bot=0 ORDER BY post,uid', (guild_id,)):
+        for hid in json.loads(member['assist_heroes']):
+            rows = db.query('SELECT * FROM hero WHERE uid=? AND id=? AND unlock=1', (member['uid'], hid))
+            if not rows:
+                continue
+            hero = rows[0]
+            result.append(dict(member_id=member['uid'], member_post=member['post'], assist_hero_id=hid,
+                               assist_hero_skin=hero.get('battle_using_skin') or hero.get('using_skin') or hid,
+                               fight_capacity=0, hero_rare=hero.get('star') or 100,
+                               hero_level=hero.get('level') or 1, nick=profile(db, member['uid'])['nick'],
+                               hero_oath_display=oath_display(db, member['uid'], hid)))
+    return result
 
 
 def room(db, uid):
@@ -260,10 +309,21 @@ def send_message(db, uid, channel, content, msg_type=1, now_ts=None):
     return row
 
 
+def join_policy(guild):
+    # The first social version used 0 for review. Preserve that saved meaning
+    # while returning a valid native toggle (1=free, 2=review, 3=closed).
+    value = guild['examine_switch']
+    return JOIN_REVIEW if value == 0 else integer(value, '入会方式', JOIN_FREE, JOIN_CLOSED)
+
+
 def member_wire(db, member, now):
     week = get_weekly_mon_5am_ts(now)
     contribution = db.query('SELECT COALESCE(SUM(vitality),0) AS total,COALESCE(SUM(CASE WHEN day_id>=? THEN vitality ELSE 0 END),0) AS weekly '
                             'FROM social_contributions WHERE guild_id=? AND uid=?', (week, member['guild_id'], member['uid']))[0]
+    import guild_contributions
+    earned = guild_contributions.member_totals(db, member['guild_id'], member['uid'], week)
+    contribution['total'] += earned['total']
+    contribution['weekly'] += earned['weekly']
     if member['is_bot']:
         level = db.query('SELECT level FROM social_bots WHERE uid=?', (member['uid'],))[0]['level']
         online = 0
@@ -271,7 +331,12 @@ def member_wire(db, member, now):
         row = db.get('users', member['uid'])
         level = row.get('level') or 1
         from server_net import get_online_uids
-        online = 0 if member['uid'] in get_online_uids() else member['joined_at']
+        presence = db.query('SELECT last_heartbeat_ts,last_logout_ts FROM user_timer_watermark WHERE uid=?',
+                            (member['uid'],))
+        recorded = presence[0] if presence else {}
+        seen = max(int(member['joined_at']), int(recorded.get('last_heartbeat_ts') or 0),
+                   int(recorded.get('last_logout_ts') or 0))
+        online = 0 if member['uid'] in get_online_uids() else min(now, seen)
     return dict(id=member['uid'], user_profile_base=profile(db, member['uid']), duty=member['post'],
                 online_info=online, vitality=min(contribution['weekly'], 4294967295),
                 total_vitality=min(contribution['total'], 4294967295), level=level)
@@ -297,18 +362,24 @@ def guild_wire(db, guild_id, viewer=0, now_ts=None):
     leader = next((m for m in members if m['post'] == 1), members[0] if members else None)
     if leader is None:
         raise ValueError('公会缺少成员')
-    level = guild_level(guild['exp'])
     week = get_weekly_mon_5am_ts(now)
+    import guild_contributions
+    earned = guild_contributions.totals(db, guild_id, week)
+    exp = guild['exp'] + earned['total_exp']
+    level = guild_level(exp)
     stats = db.query('SELECT COALESCE(SUM(CASE WHEN day_id>=? THEN vitality ELSE 0 END),0) AS xp,'
                     'COALESCE(SUM(CASE WHEN day_id>=? THEN donation ELSE 0 END),0) AS coin,'
                     'COALESCE(SUM(CASE WHEN day_id<? AND day_id>=? THEN vitality ELSE 0 END),0) AS previous '
                     'FROM social_contributions WHERE guild_id=?', (week, week, week, week - 7 * DAY, guild_id))[0]
+    stats['xp'] += earned['weekly_exp']
+    stats['coin'] += earned['weekly_coin']
+    stats['previous'] += earned['previous']
     post = next((m['post'] for m in members if m['uid'] == viewer), 3)
     cfg = CATALOG['levels'][str(level)]
     return dict(id=guild_id, name=guild['name'], icon=guild['icon'], level=level, notice=guild['notice'],
                 leader=member_wire(db, leader, now), member_count=len(members), member_count_limit=cfg['user_num_max'],
-                club_setting=dict(examine_recruit_join_request_switch=guild['examine_switch'], join_request_limit=guild['join_min_level']),
-                club_exp=guild['exp'], impeach_timestamp=0, last_week_total_vitality=stats['previous'],
+                club_setting=dict(examine_recruit_join_request_switch=join_policy(guild), join_request_limit=guild['join_min_level']),
+                club_exp=exp, impeach_timestamp=0, last_week_total_vitality=stats['previous'],
                 weekly_gain_exp=min(stats['xp'], cfg['max_exp_per_week']),
                 weekly_gain_coin=min(stats['coin'], cfg['max_currency_per_week']), post=post, is_candidate=0)
 
@@ -333,7 +404,10 @@ def create_guild(db, uid, name, icon, notice, now):
                         (name, icon, notice, now, now))
     guild_id = cursor.lastrowid
     db.execute('INSERT INTO social_members(guild_id,uid,is_bot,post,joined_at) VALUES(?,?,0,1,?)', (guild_id, uid, now))
+    import guild_contributions
+    guild_contributions.ensure_tasks(db, uid)
     db.execute('UPDATE users SET club_id=?,club_post=1 WHERE uid=?', (guild_id, uid))
+    db.execute('DELETE FROM social_requests WHERE uid=?', (uid,))
     add_bots(db, guild_id, now)
     return guild_id
 
@@ -345,12 +419,15 @@ def join_guild(db, uid, guild_id, now, approved=False):
     if not guild:
         raise ValueError('公会不存在')
     guild = guild[0]
+    policy = join_policy(guild)
+    if policy == JOIN_CLOSED:
+        raise ValueError('该家族已禁止加入')
     info = guild_wire(db, guild_id, now_ts=now)
     if info['member_count'] >= info['member_count_limit']:
         raise ValueError('公会已满')
     if int(db.get('users', uid).get('level') or 1) < guild['join_min_level']:
         raise ValueError('等级不足')
-    if guild['examine_switch'] != 1 and not approved:
+    if policy == JOIN_REVIEW and not approved:
         db.execute('INSERT OR IGNORE INTO social_requests VALUES(?,?,?)', (guild_id, uid, now))
         return False
     first_human = not db.query('SELECT 1 FROM social_members WHERE guild_id=? AND is_bot=0', (guild_id,))
@@ -358,21 +435,30 @@ def join_guild(db, uid, guild_id, now, approved=False):
     if first_human:
         db.execute('UPDATE social_members SET post=3 WHERE guild_id=?', (guild_id,))
     db.execute('INSERT INTO social_members(guild_id,uid,is_bot,post,joined_at) VALUES(?,?,0,?,?)', (guild_id, uid, post, now))
+    import guild_contributions
+    guild_contributions.ensure_tasks(db, uid)
     db.execute('DELETE FROM social_requests WHERE uid=?', (uid,))
     db.execute('UPDATE users SET club_id=?,club_post=? WHERE uid=?', (guild_id, post, uid))
     return True
 
 
 def leave_guild(db, uid, guild_id):
+    import guild_prepose
     member = require_member(db, uid, guild_id)
+    guild_prepose.cancel(db, uid, guild_id)
     db.execute('DELETE FROM social_members WHERE guild_id=? AND uid=? AND is_bot=0', (guild_id, uid))
     db.execute('UPDATE users SET club_id=0,club_post=0 WHERE uid=?', (uid,))
+    successor = []
     if member['post'] == 1:
         successor = db.query('SELECT uid,is_bot FROM social_members WHERE guild_id=? ORDER BY is_bot,post,uid LIMIT 1', (guild_id,))
         if successor:
             db.execute('UPDATE social_members SET post=1 WHERE guild_id=? AND uid=?', (guild_id, successor[0]['uid']))
             if not successor[0]['is_bot']:
                 db.execute('UPDATE users SET club_post=1 WHERE uid=?', (successor[0]['uid'],))
+    if not db.query('SELECT 1 FROM social_members WHERE guild_id=?', (guild_id,)):
+        db.execute('DELETE FROM social_requests WHERE guild_id=?', (guild_id,))
+        db.execute('DELETE FROM social_guilds WHERE id=?', (guild_id,))
+    return successor[0] if successor else None
 
 
 def _allocate(amount, members, seed):
@@ -404,7 +490,10 @@ def advance_guilds(db, now, config):
         xp_gain = 0
         prior_week_xp = db.query('SELECT COALESCE(SUM(vitality),0) AS n FROM social_contributions WHERE guild_id=? AND day_id>=?',
                                 (gid, week))[0]['n']
-        xp_cap = CATALOG['levels'][str(guild_level(guild['exp']))]['max_exp_per_week']
+        import guild_contributions
+        earned = guild_contributions.totals(db, gid, week)
+        prior_week_xp += earned['weekly_exp']
+        xp_cap = CATALOG['levels'][str(guild_level(guild['exp'] + earned['total_exp']))]['max_exp_per_week']
         # Bound catch-up to this week. Derive a target from elapsed time and
         # subtract committed contributions, rather than blindly adding per tick.
         first_day = max(week, get_daily_5am_ts(guild['created_at']))
@@ -448,6 +537,7 @@ def advance_guilds(db, now, config):
 
 
 def boss_info(db, uid, guild_id=None, now_ts=None):
+    import guild_prepose
     now = int(time.time()) if now_ts is None else int(now_ts)
     member = membership(db, uid)
     gid = guild_id if guild_id is not None else member['guild_id'] if member else 0
@@ -473,9 +563,11 @@ def boss_info(db, uid, guild_id=None, now_ts=None):
     pre_info = [dict(level_id=r['level_id'], stage_id=r['stage_id'],
                     score=min(CATALOG['prepose'][str(r['level_id'])]['point_max'], pre_scores.get(r['level_id'], 0))) for r in pre]
     affixes = db.query('SELECT DISTINCT affix_id,level,aff_type FROM guild_boss_affix ORDER BY affix_id')
+    personal_prepose = guild_prepose.daily(db, uid, now) if member else dict(clear_times=0, claimed=0)
     return dict(result=0, affx_list=[dict(affix_id=r['affix_id'],affix_level=r['level'],type=r['aff_type']) for r in affixes],
-                pre_info=pre_info, day_first_clear_prepose=0, day_clear_prepose_times=0,
-                day_first_clear_award_admitted=0,
+                pre_info=pre_info, day_first_clear_prepose=int(personal_prepose['clear_times'] > 0),
+                day_clear_prepose_times=personal_prepose['clear_times'],
+                day_first_clear_award_admitted=personal_prepose['claimed'],
                 info=dict(boss_tempalte_id=config['boss_list'][0], difficulty=difficulty, total_damage=total,
                           collective_damage_award=int(100 * total / config['boss_hp']),
                           collective_damage_award_admitted=[c['award_id'] for c in claims if c['kind'] == 2],

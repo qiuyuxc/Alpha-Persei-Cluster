@@ -2996,17 +2996,21 @@ class AccountDB:
         import time as _t
         ts = now_ts or int(_t.time())
         tid = int(task_id)
-        cur = self.execute(
-            "UPDATE task SET claimed_ts=?, complete_flag=1 WHERE uid=? AND task_id=?",
-            (ts, uid, tid))
-        if not self._is_recurring_task(tid):
-            self.mark_claimed(uid, "task", tid, ts)
-            if 227000 <= tid <= 227999:
-                self.mark_claimed(uid, "illustrated_task", tid, ts)
-        if cur.rowcount:
+        with savepoint_transaction(self, immediate=True):
+            cur = self.execute(
+                "UPDATE task SET claimed_ts=?, complete_flag=1 WHERE uid=? AND task_id=? "
+                "AND COALESCE(claimed_ts,0)=0", (ts, uid, tid))
+            if not cur.rowcount:
+                return False
+            if not self._is_recurring_task(tid):
+                self.mark_claimed(uid, "task", tid, ts)
+                if 227000 <= tid <= 227999:
+                    self.mark_claimed(uid, "illustrated_task", tid, ts)
+            import guild_contributions
+            guild_contributions.record_task_claim(self, uid, tid, int(ts))
             from fresh_profile import advance_tasks
             advance_tasks(self, uid)
-        return cur.rowcount > 0
+            return True
 
     # ---------- 活跃度接口（ActivityPt / 28016 / 28019） ----------
 

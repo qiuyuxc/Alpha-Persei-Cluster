@@ -100,7 +100,7 @@ class SocialTests(unittest.TestCase):
 
     def test_request_review_and_guild_privacy(self):
         self.join()
-        self.assertEqual(self.ack(31018, {'setting': {'examine_recruit_join_request_switch': 0, 'join_request_limit': 1}})['result'], 0)
+        self.assertEqual(self.ack(31018, {'setting': {'examine_recruit_join_request_switch': 2, 'join_request_limit': 1}})['result'], 0)
         self.join(OTHER)
         self.assertFalse(social.membership(self.db, OTHER))
         requests = decode(protocol.request_frame(self.db, UID).payload, 'sc_31979')['join_list']
@@ -195,9 +195,17 @@ class SocialTests(unittest.TestCase):
         self.advance(self.clock.return_value)
         reward = social.CATALOG['bosses']['1']['reward'][0][1]
         before = {item: InventoryService.get_item_balance(self.db, UID, item)[1] for item, _ in reward}
+        prior_vitality = social.member_wire(self.db, social.membership(self.db, UID), self.clock.return_value)['total_vitality']
+        prior_guild = social.guild_wire(self.db, GID, UID, self.clock.return_value)
         self.assertEqual(self.ack(33008, body)['result'], 0)
         for item, count in reward:
-            self.assertEqual(InventoryService.get_item_balance(self.db, UID, item)[1], before[item] + count)
+            if item == 52003:
+                self.assertEqual(social.member_wire(self.db, social.membership(self.db, UID), self.clock.return_value)['total_vitality'], prior_vitality + count)
+            elif item in (52001,52002):
+                field = 'weekly_gain_coin' if item == 52001 else 'club_exp'
+                self.assertEqual(social.guild_wire(self.db, GID, UID, self.clock.return_value)[field], prior_guild[field] + count)
+            else:
+                self.assertEqual(InventoryService.get_item_balance(self.db, UID, item)[1], before[item] + count)
         self.assertNotEqual(self.ack(33008, body)['result'], 0)
         self.assertNotEqual(self.ack(33008, {**body, 'type': 1, 'award_id': 30000})['result'], 0)
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM social_reward_claims'), 1)
@@ -479,7 +487,8 @@ class SocialTests(unittest.TestCase):
         self.assertTrue(any(f.cmd == 33001 for f in pushed))
         pushed.clear()
         runtime.notify_guild_windows(self.db, [UID], NOW + 5 * social.DAY, push)
-        self.assertFalse(pushed)
+        self.assertEqual([f.cmd for f in pushed], [33001])
+        pushed.clear()
         runtime.notify_guild_windows(self.db, [UID], NOW + 7 * social.DAY, push)
         self.assertEqual(sum(f.cmd == 11003 for f in pushed), 3)
         payload = decode(next(f.payload for f in pushed if f.cmd == 11003), 'sc_11003')

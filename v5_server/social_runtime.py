@@ -12,26 +12,32 @@ log = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='SocialNPC')
 _slot = threading.BoundedSemaphore(1)
 _activity_weeks = {}
+_activity_days = {}
 
 
 def notify_guild_windows(db, online, now, push):
-    """Refresh long-lived clients at the weekly boundary, even with NPCs off."""
+    """Refresh weekly activities and daily preparation limits with NPCs off."""
     import guild_cycle
     from social_protocol import frame, own_guild_frame
     week = guild_cycle.window(now)[0]
-    for uid in list(_activity_weeks):
+    day = social.get_daily_5am_ts(now)
+    for uid in set(_activity_weeks) | set(_activity_days):
         if uid not in online:
-            del _activity_weeks[uid]
+            _activity_weeks.pop(uid, None)
+            _activity_days.pop(uid, None)
     for uid in online:
-        if _activity_weeks.get(uid) == week:
+        week_changed = _activity_weeks.get(uid) != week
+        if not week_changed and _activity_days.get(uid) == day:
             continue
-        packets = [frame(11003, {'activity': row}) for row in guild_cycle.activities(now)]
+        packets = [frame(11003, {'activity': row}) for row in guild_cycle.activities(now)] if week_changed else []
         member = social.membership(db, uid)
         if member:
-            packets.extend([own_guild_frame(db, uid, now),
-                            frame(33001, social.boss_info(db, uid, member['guild_id'], now))])
-        if push(uid, packets):
+            if week_changed:
+                packets.append(own_guild_frame(db, uid, now))
+            packets.append(frame(33001, social.boss_info(db, uid, member['guild_id'], now)))
+        if not packets or push(uid, packets):
             _activity_weeks[uid] = week
+            _activity_days[uid] = day
 
 
 def activity(db, now_ts=None, online=None):

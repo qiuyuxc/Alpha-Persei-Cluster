@@ -440,6 +440,11 @@ class InventoryService:
             if count <= 0 or iid <= 0:
                 continue
 
+            # Shared guild resources are booked by the task/rift claim owner,
+            # with its guild membership and claim identity, not a player bag.
+            if iid in (52001, 52002, 52003):
+                continue
+
             itype = cls.classify_item(db, iid)
 
             if itype == ItemType.CURRENCY:

@@ -31,6 +31,29 @@ def _ensure_schema():
     global _SCHEMA_READY
     if not _SCHEMA_READY:
         ds.ensure_schema()
+        # p32's full foreign hero and p54's three-field battle selection share
+        # a Lua message name. Scope the p32 record rather than replacing p54.
+        ds.SCHEMA['p32_hero_info_net_rec'] = {
+            1: {'name': 'hero_base_info', 'number': 1, 'type': 'message', 'label': 'required', 'ref': 'hero_base_net_rec'},
+            2: {'name': 'equip_list', 'number': 2, 'type': 'message', 'label': 'repeated', 'ref': 'equip_net_rec'},
+            3: {'name': 'using_hero_chip', 'number': 3, 'type': 'uint32', 'label': 'repeated'},
+            4: {'name': 'dorm_level', 'number': 4, 'type': 'uint32', 'label': 'required'},
+            5: {'name': 'trust', 'number': 5, 'type': 'message', 'label': 'optional', 'ref': 'hero_trust_net_rec'},
+        }
+        ds.SCHEMA['sc_32021'][3]['ref'] = 'p32_hero_info_net_rec'
+        ds.SCHEMA['cs_32020'][2] = {'name': 'type', 'number': 2, 'type': 'uint32', 'label': 'required'}
+        ds.SCHEMA['p54_hero_info_net_rec'] = {
+            1: {'name': 'hero_id', 'number': 1, 'type': 'uint32', 'label': 'required'},
+            2: {'name': 'owner_id', 'number': 2, 'type': 'uint64', 'label': 'optional'},
+            3: {'name': 'hero_type', 'number': 3, 'type': 'uint32', 'label': 'required'},
+        }
+        ds.SCHEMA['enter_battle_common_info'][1]['ref'] = 'p54_hero_info_net_rec'
+        ds.SCHEMA['p54_player_net_rec'] = {
+            1: {'name': 'player_id', 'number': 1, 'type': 'uint64', 'label': 'required'},
+            2: {'name': 'player_battle_info', 'number': 2, 'type': 'message', 'label': 'required', 'ref': 'player_battle_net_rec'},
+            3: {'name': 'player_room_info', 'number': 3, 'type': 'message', 'label': 'optional', 'ref': 'player_room_net_rec'},
+        }
+        ds.SCHEMA['sc_54003'][1]['ref'] = 'p54_player_net_rec'
         # 补充芯片协议 (50006, 50007, 50016, 50017)
         ds.SCHEMA.setdefault("cs_50006", {
             1: {"name": "kernel_id", "number": 1, "type": "uint32", "label": "required", "ref": None},
