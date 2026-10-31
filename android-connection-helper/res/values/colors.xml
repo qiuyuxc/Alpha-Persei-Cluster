@@ -1,0 +1,5 @@
+<resources>
+    <color name="connection_background">#F7F7F7</color>
+    <color name="connection_accent">#3482FF</color>
+    <bool name="connection_light_bars">true</bool>
+</resources>

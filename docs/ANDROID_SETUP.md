@@ -1,6 +1,6 @@
 # Android 客户端安装与适配
 
-Android 需要同时处理证书信任和域名重定向。仅安装 DNS 模块，不能让原版客户端自动信任自己的服务器证书。
+Android 需要同时处理证书信任和域名重定向。域名重定向可选择免 root 连接助手或 LSPosed 模块；仅安装其中任一种，不能让原版客户端自动信任自己的服务器证书。
 
 本仓库只提供源码和 [本地处理脚本](../tools/android-user-ca/README.md)，不分发游戏客户端安装包。需要自行准备：
 
@@ -9,7 +9,7 @@ Android 需要同时处理证书信任和域名重定向。仅安装 DNS 模块�
 | 兼容的原始 `v0.308.301` APK | 脚本的本地输入，由使用者自己提供 |
 | 自己的 PKCS12 签名密钥 | 给生成的用户 CA 版客户端签名，后续更新需继续使用同一把密钥 |
 | 自己服务器的根 CA | 安装到手机的用户 CA 存储，让客户端信任服务器证书 |
-| 本仓库的 LSPosed 模块源码 | 构建模块 1.7，保存服务器 IPv4 地址，并提供游戏内子 GM 入口 |
+| 连接助手或 LSPosed 模块源码 | 免 root 助手 1.0仅负责进服；Root 用户也可使用模块 1.7 及游戏内子 GM 入口 |
 
 游戏 APK 版本 `v0.308.301`、服务端资源构建号 `321`、模块版本 `1.7` 是三个不同的版本号，不需要相同。仓库的源码压缩包不包含游戏 APK。
 
@@ -44,9 +44,22 @@ python tools/android-user-ca/patch_apk.py /path/to/original.apk --check
 openssl x509 -in v5_server/sdk_ca.crt -noout -fingerprint -sha256
 ```
 
-脚本**不会内置某台服务器的 CA 或私服 IP**，仓库也不提供维护者的服务器 CA。换服务器时，应安装新服务器的 CA，并更新模块地址。服务端更换根 CA 后，手机也需要重新安装对应证书；仅更新由同一根 CA 签发的服务证书时通常无需重装根 CA。
+脚本**不会内置某台服务器的 CA 或私服 IP**，仓库也不提供维护者的服务器 CA。换服务器时，应安装新服务器的 CA，并更新助手或模块中的地址。服务端更换根 CA 后，手机也需要重新安装对应证书；仅更新由同一根 CA 签发的服务证书时通常无需重装根 CA。
 
-## 3. 安装和设置 LSPosed 模块
+## 3. 选择连接方式
+
+### 免 root：连接助手 1.0
+
+1. 从 [助手 1.0 发行页](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-connect-v1.0) 下载并安装 APK，或按 [助手构建说明](../android-connection-helper/README.md) 自行生成签名包。助手要求 Android 7+，无需 root 和 LSPosed，不提供 GM 入口。
+2. 关闭其他 VPN，将系统“私人 DNS / 私有 DNS”设为关闭。助手使用系统本地 VPN，不能与其他 VPN 同时开启。
+3. 打开“深空连接助手”，输入手机可访问的服务器 IPv4，点击“开启连接”，允许系统 VPN 请求。
+4. 完全退出后重新打开游戏，后台保留助手。不要启用“无 VPN 时阻止连接”。
+
+助手只接管游戏的 DNS，登录与活动网关域名指向填写的服务器，游戏连接和资源下载走原网络。证书安装和用户 CA 版游戏依然需要。“连接已开启”表示本地连接服务运行，并不表示已经通过服务器登录。
+
+2026-10-31 用户已确认 VPN 进服、连接开启和停止正常。当前 1.0 沿用已验收的连接逻辑，可使用相同签名覆盖安装 0.1 / 0.1.1 并保留配置。DNS 专项测试、Android 编译和 APK 签名均有验证记录。
+
+### Root：LSPosed 模块
 
 1. 手机需具有 Root 和可用的 LSPosed 环境；当前模块面向 ARM64、Android 7+，要求 LSPosed Native Hook / API 93+。
 2. 按 [模块构建说明](../lsposed-dns-module/README.md) 生成并安装 `AlphaPersei-DNS-LSPosed-v8.apk`，在 LSPosed 中启用模块，作用域只选择“深空之眼” `com.yongshi.tenojo.ys`。
@@ -65,7 +78,7 @@ openssl x509 -in v5_server/sdk_ca.crt -noout -fingerprint -sha256
 
 默认服务端连接使用 HTTPS 443、网关 TCP 8102、逻辑服 TCP 8105 和战斗 UDP 6105。模块的 HTTPS 与子 GM 入口使用 443 端口。
 
-游戏内点击可拖动的 GM 按钮，或在模块应用中点击“打开子 GM 后台”。入口根据保存的 IP 自动生成，例如默认地址是 `https://127.0.0.1/web/sub_gm.html`。使用服务端管理员账号登录，普通游戏账号没有 GM 权限。
+使用 LSPosed 模块时，可在游戏内点击可拖动的 GM 按钮，或在模块应用中点击“打开子 GM 后台”。免 root 助手不提供此入口。入口根据保存的 IP 自动生成，例如默认地址是 `https://127.0.0.1/web/sub_gm.html`。使用服务端管理员账号登录，普通游戏账号没有 GM 权限。
 
 服务证书需覆盖游戏请求的官方域名；模块中的子 GM 通过 IP 访问，因此证书还应包含配置的服务器 IP。出现证书错误时应核对服务器证书、CA、IP 和设备时间。模块保留证书链与主机名校验。
 
@@ -76,7 +89,7 @@ openssl x509 -in v5_server/sdk_ca.crt -noout -fingerprint -sha256
 1. `AndroidManifest.xml`：设置 `android:networkSecurityConfig`，引用现有 XML 资源。
 2. `res/xml/sobot_provider_paths.xml`：加入 `network-security-config`，信任 `system` 与 `user` 两类 CA，同时保留原 FileProvider 使用的 `sobot_root_path` 节点。
 
-`resources.arsc`、DEX、原生库和游戏资源均保持原内容，非签名文件集合不变；打包时保留原有资源布局。没有把证书或服务器地址写进游戏代码，也没有关闭 HTTPS 证书和主机名校验。用户 CA 配置与 LSPosed DNS 模块分别解决信任和连接目标问题，两者都需要。
+`resources.arsc`、DEX、原生库和游戏资源均保持原内容，非签名文件集合不变；打包时保留原有资源布局。没有把证书或服务器地址写进游戏代码，也没有关闭 HTTPS 证书和主机名校验。用户 CA 配置解决证书信任问题；连接助手或 LSPosed 模块解决连接目标问题。
 
 这套 XML 复用和打包方式只在当前客户端构建中验证过，不应直接套到其他版本。脚本会进行适配检查，不提供绕过版本校验的选项。官方 APK 升级可能覆盖信任修改；游戏内资源更新与 APK 替换是两件事。
 

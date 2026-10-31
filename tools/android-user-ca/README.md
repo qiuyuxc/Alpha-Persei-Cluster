@@ -66,7 +66,7 @@ python tools/android-user-ca/patch_apk.py /path/to/original.apk \
 
 ## 安装与连接
 
-生成 APK 后，继续阅读 [Android 安装与适配说明](../../docs/ANDROID_SETUP.md)：安装自己服务器的用户 CA，构建并启用 LSPosed 模块，保存服务器 IPv4，再完全重启游戏。
+生成 APK 后，继续阅读 [Android 安装与适配说明](../../docs/ANDROID_SETUP.md)：安装自己服务器的用户 CA，选择免 root 连接助手或 LSPosed 模块，填写服务器 IPv4，再完全重启游戏。免 root 助手 1.0 已有用户真机进服及连接开关正常的反馈，其他功能的验收状态见助手说明。
 
 重新签名的 APK 不能直接覆盖不同签名的官方版或其他人构建的版本。遇到签名冲突时先备份客户端数据及下载资源，不要通过反复卸载、清数据来试错。
 

@@ -89,5 +89,7 @@ validation.json
 /lsposed-dns-module/build/
 /lsposed-dns-module/dist/
 /lsposed-dns-module/signing/
+/android-connection-helper/build/
+/android-connection-helper/signing/
 /server-repair/
 /android-analysis/

@@ -4,7 +4,7 @@
 
 The server is in `v5_server/`, the desktop launcher in `LocalServer/`, and the Android LSPosed module in [`lsposed-dns-module/`](lsposed-dns-module/README.md). The module defaults to `127.0.0.1`; save your server IPv4 address in the module settings to configure both DNS redirection and the GM page without rebuilding.
 
-For Android, follow the [client setup guide (Chinese)](docs/ANDROID_SETUP.md). Supply your own original APK, process it with the [local patching script](tools/android-user-ca/README.md), and sign it with your own key. Then install your server's root CA and build the LSPosed DNS module. This repository does not distribute game client APKs.
+For Android, follow the [client setup guide (Chinese)](docs/ANDROID_SETUP.md). Supply your own original APK, process it with the [local patching script](tools/android-user-ca/README.md), and sign it with your own key. Install your server's root CA and use either the [no-root connection helper](android-connection-helper/README.md) or the LSPosed module. The helper is at version 1.0 without a GM interface; user testing confirmed successful VPN login and working start/stop controls. This repository does not distribute game client APKs.
 
 This fork includes separate accounts and saves, GM management, recurring activities and mail, social bots, and weekly guild phases. Build the main and mobile GM pages with `npm run build` and `npm run build:sub`. Player databases, credentials, signing keys, logs, local work notes, and complete game resources are excluded. Supply the base database, client resources, and server certificates before running. The upstream project and release documentation follows below.
 
@@ -199,9 +199,9 @@ Add static resolution entries to `C:\Windows\System32\drivers\etc\hosts` pointin
 4. Open Safari on iOS, navigate to `http://192.168.1.100/sdk_ca.mobileconfig`, then install and trust the profile;
 5. **Note**: This section describes iOS LAN setup. Android uses the dedicated procedure below; HarmonyOS has not been independently verified.
 
-#### Method 3: Android User-CA Client and LSPosed Module
+#### Method 3: Android User-CA Client and Connection Helper / LSPosed Module
 
-Use the [local script](tools/android-user-ca/README.md) to process your own original APK and sign the result with your key. Install your server's root CA through Android's CA certificate settings, then build and enable the LSPosed module and save your server IPv4 address. Restart the game completely. The GM URL follows the saved address. See the [Android setup guide](docs/ANDROID_SETUP.md) for signature compatibility, configuration and the exact client modifications.
+Use the [local script](tools/android-user-ca/README.md) to process your own original APK and sign the result with your key. Install your server's root CA through Android's CA certificate settings, then choose the no-root connection helper or the LSPosed module on a rooted device and enter your server IPv4 address. Restart the game completely. The v1.0 helper has no GM interface; user testing confirmed VPN login and start/stop controls; the LSPosed GM URL follows its saved address. See the [Android setup guide](docs/ANDROID_SETUP.md) for signature compatibility, configuration and the exact client modifications.
 
 ---
 

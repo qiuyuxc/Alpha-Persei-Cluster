@@ -4,7 +4,7 @@
 
 服务端位于 `v5_server/`，桌面启动器位于 `LocalServer/`，Android 模块位于 [`lsposed-dns-module/`](lsposed-dns-module/README.md)。模块默认使用 `127.0.0.1`，在模块内保存服务器 IP 后，DNS 重定向与子 GM 入口会共用该地址。
 
-Android 请先阅读 [客户端安装与适配说明](docs/ANDROID_SETUP.md)。使用者自行准备原始 APK，通过 [本地处理脚本](tools/android-user-ca/README.md) 生成用户 CA 版并使用自己的密钥签名，再安装自己服务器的根 CA 和域名重定向模块。本仓库不提供游戏客户端安装包。
+Android 请先阅读 [客户端安装与适配说明](docs/ANDROID_SETUP.md)。使用者自行准备原始 APK，通过 [本地处理脚本](tools/android-user-ca/README.md) 生成用户 CA 版并使用自己的密钥签名，再安装自己服务器的根 CA，选择 [免 root 连接助手](android-connection-helper/README.md) 或 LSPosed 模块。助手 1.0 已通过用户真机进服及连接开关验证。本仓库不提供游戏客户端安装包。
 
 服务端包含独立账号与存档、主/子 GM 管理、周期与自动邮件、公屏/公会人机及公会周周期。使用说明见 [账号设置](v5_server/ACCOUNTS.md)、[GM 功能](v5_server/GM_MANAGEMENT.md) 和 [周期与邮件](v5_server/CYCLES_AND_MAIL.md)。前端修改后分别执行 `npm run build` 和 `npm run build:sub`。资源下发的识别规则和平台限制见 [资源平台说明](v5_server/RESOURCE_PLATFORMS.md)。
 
@@ -201,9 +201,9 @@ Android 请先阅读 [客户端安装与适配说明](docs/ANDROID_SETUP.md)。�
 4. iOS 设备使用 Safari 访问 `http://192.168.1.100/sdk_ca.mobileconfig` 下载并安装信任证书描述文件；
 5. **说明**：本节为 iOS 的局域网连接方式。Android 使用下面的专门适配流程；HarmonyOS 未完成独立验证。
 
-#### 方案 3：Android 用户 CA 客户端与 LSPosed 模块
+#### 方案 3：Android 用户 CA 客户端与连接助手 / LSPosed 模块
 
-使用 [本地处理脚本](tools/android-user-ca/README.md) 处理自己准备的原始 APK 并签名，在系统“CA 证书”入口安装自己服务器的根证书，再构建并启用 LSPosed 模块，保存服务器 IPv4 地址。完全重启游戏后生效；GM 入口随模块地址同步更新。完整步骤、签名冲突处理和修改范围见 [Android 安装与适配说明](docs/ANDROID_SETUP.md)。
+使用 [本地处理脚本](tools/android-user-ca/README.md) 处理自己准备的原始 APK 并签名，在系统“CA 证书”入口安装自己服务器的根证书，再选择免 root 连接助手或 Root 下的 LSPosed 模块，填写服务器 IPv4 地址并完全重启游戏。免 root 助手 1.0 不含 GM，已有用户真机进服及连接开关正常的反馈；LSPosed 的 GM 入口随模块地址同步更新。完整步骤、签名冲突处理和修改范围见 [Android 安装与适配说明](docs/ANDROID_SETUP.md)。
 
 ---
 

@@ -1,0 +1,12 @@
+<resources>
+    <style name="ConnectionTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">@color/connection_accent</item>
+        <item name="android:windowBackground">@color/connection_background</item>
+        <item name="android:statusBarColor">@color/connection_background</item>
+        <item name="android:navigationBarColor">@color/connection_background</item>
+        <item name="android:windowLightStatusBar">@bool/connection_light_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/connection_light_bars</item>
+        <item name="android:forceDarkAllowed">false</item>
+    </style>
+</resources>
