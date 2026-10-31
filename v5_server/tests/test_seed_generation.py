@@ -85,6 +85,40 @@ class SeedGenerationTests(unittest.TestCase):
         self.assertTrue(generated['synthetic'])
         self.assertEqual(original.read_bytes(), b'An unrelated save is never read or modified.')
 
+    def test_encoded_sqlite_audit_paths_preserve_database_isolation(self):
+        code = """
+import os
+from pathlib import Path
+import sqlite3
+import sys
+from test_seed import SERVER, SeedBuilder
+
+output = Path(sys.argv[1])
+builder = SeedBuilder(SERVER, output)
+try:
+    # Python 3.10 reports encoded paths even when connect() receives a string.
+    sys.audit('sqlite3.connect', os.fsencode(output))
+    sys.audit('sqlite3.connect', b':memory:')
+    with sqlite3.connect(os.fsencode(output)) as db:
+        assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+    with sqlite3.connect(b':memory:') as db:
+        assert db.execute('SELECT 1').fetchone()[0] == 1
+    forbidden = output.with_name('forbidden.db')
+    try:
+        sqlite3.connect(os.fsencode(forbidden))
+    except RuntimeError as error:
+        assert 'Only the new seed may be opened:' in str(error)
+    else:
+        raise AssertionError('The generator opened an unrelated database')
+    assert not forbidden.exists()
+finally:
+    builder.db.close()
+"""
+        env = dict(os.environ, PYTHONPATH=str(SERVER), PYTHONDONTWRITEBYTECODE='1')
+        checked = subprocess.run([sys.executable, '-c', code, str(self.root / 'encoded-种子.db')],
+                                 env=env, cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def test_import_opens_no_database_and_missing_override_is_clear(self):
         code = """
 import sys

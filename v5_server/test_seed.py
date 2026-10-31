@@ -86,9 +86,10 @@ class SeedBuilder:
         def isolated(event, args):
             if event in ('socket.connect', 'socket.getaddrinfo'):
                 raise RuntimeError('Seed generation is offline')
-            if event == 'sqlite3.connect' and args[0] != ':memory:':
-                if Path(args[0]).resolve() != output.resolve():
-                    raise RuntimeError('Only the new seed may be opened: ' + str(args[0]))
+            if event == 'sqlite3.connect':
+                name = os.fsdecode(args[0])
+                if name != ':memory:' and Path(name).resolve() != output.resolve():
+                    raise RuntimeError('Only the new seed may be opened: ' + name)
         sys.addaudithook(isolated)
         from account_db import AccountDB
         self.db = AccountDB(str(output))
