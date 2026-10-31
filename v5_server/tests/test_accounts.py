@@ -1,6 +1,6 @@
 """Real account, UID isolation, login packet, and progression contracts.
 
-Run against a complete database COPY using GM_TEST_DB_SEED. No live save changes.
+Run against a generated database copy; GM_TEST_DB_SEED can select another fixture.
 """
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -17,7 +17,9 @@ import types
 import unittest
 from unittest.mock import patch
 
-SEED = Path(os.environ['GM_TEST_DB_SEED']).resolve()
+from test_seed import get_seed_path
+
+SEED = get_seed_path()
 WORK = tempfile.TemporaryDirectory(prefix='ag-account-tests-')
 BOOT = Path(WORK.name) / 'bootstrap.db'
 shutil.copyfile(SEED, BOOT)

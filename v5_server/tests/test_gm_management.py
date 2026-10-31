@@ -8,7 +8,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-SEED = Path(os.environ['GM_TEST_DB_SEED']).resolve()
+from test_seed import get_seed_path
+
+SEED = get_seed_path()
 SANDBOX = tempfile.TemporaryDirectory(prefix='ag-gm-tests-')
 BOOTSTRAP = Path(SANDBOX.name) / 'bootstrap.db'
 shutil.copyfile(SEED, BOOTSTRAP)
@@ -304,7 +306,8 @@ class ManagementTests(unittest.TestCase):
     def test_online_backup_includes_wal_changes(self):
         self.db._conn().execute('PRAGMA journal_mode=WAL')
         self.db.execute('UPDATE currency SET num=123456789 WHERE uid=? AND id=1', (UID,))
-        result = self.post('server/backup_db', {})
+        with patch.object(gm_api, '__file__', str(self.path.with_name('gm_api.py'))):
+            result = self.post('server/backup_db', {})
         self.assertEqual(result['code'], 0, result)
         backup = Path(result['data']['backup_path'])
         try:

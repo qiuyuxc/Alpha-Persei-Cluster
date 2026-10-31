@@ -11,7 +11,9 @@ import unittest
 from unittest.mock import Mock, patch
 import zlib
 
-SEED = Path(os.environ['GM_TEST_DB_SEED']).resolve()
+from test_seed import get_seed_path
+
+SEED = get_seed_path()
 SANDBOX = tempfile.TemporaryDirectory(prefix='ag-edge-state-tests-')
 BOOT = Path(SANDBOX.name) / 'bootstrap.db'
 shutil.copyfile(SEED, BOOT)

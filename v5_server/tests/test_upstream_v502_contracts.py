@@ -1,6 +1,6 @@
 """v5.0.2 gameplay fixes adapted to the multi-account server.
 
-Use a complete database COPY via GM_TEST_DB_SEED; no live save is changed.
+Use a generated database copy; GM_TEST_DB_SEED can select another fixture.
 """
 from contextlib import ExitStack
 import json
@@ -11,7 +11,9 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
-SEED = Path(os.environ['GM_TEST_DB_SEED']).resolve()
+from test_seed import get_seed_path
+
+SEED = get_seed_path()
 SANDBOX = tempfile.TemporaryDirectory(prefix='ag-upstream-v502-tests-')
 BOOT = Path(SANDBOX.name) / 'bootstrap.db'
 shutil.copyfile(SEED, BOOT)

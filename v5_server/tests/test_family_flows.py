@@ -9,7 +9,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-SEED = Path(os.environ['GM_TEST_DB_SEED']).resolve()
+from test_seed import get_seed_path
+
+SEED = get_seed_path()
 SANDBOX = tempfile.TemporaryDirectory(prefix='ag-family-flows-')
 BOOTSTRAP = Path(SANDBOX.name) / 'bootstrap.db'
 shutil.copyfile(SEED, BOOTSTRAP)
@@ -58,7 +60,8 @@ class FamilyFlowTests(unittest.TestCase):
                          codec_encode=encode, codec_decode=decode)
         social.initialize(self.db, NOW)
         for uid in (OTHER, THIRD):
-            self.db.execute('INSERT OR IGNORE INTO users(uid,nick,level) VALUES(?,?,80)', (uid, str(uid)))
+            self.db.execute('INSERT INTO users(uid,nick,level) VALUES(?,?,80) '
+                            'ON CONFLICT(uid) DO UPDATE SET level=80', (uid, str(uid)))
         for uid, hid, level in ((UID, HERO, 28), (OTHER, BORROWED, 47)):
             self.db.execute('INSERT INTO hero(uid,id,unlock,level,star,using_skin,battle_using_skin) '
                             'VALUES(?,?,1,?,300,?,?) ON CONFLICT(uid,id) DO UPDATE SET '

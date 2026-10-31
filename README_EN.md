@@ -8,6 +8,8 @@ For Android, follow the [client setup guide (Chinese)](docs/ANDROID_SETUP.md). S
 
 This fork includes separate accounts and saves, GM management, recurring activities and mail, social bots, and weekly guild phases. Build the main and mobile GM pages with `npm run build` and `npm run build:sub`. Player databases, credentials, signing keys, logs, local work notes, and complete game resources are excluded. Supply the base database, client resources, and server certificates before running. The upstream project and release documentation follows below.
 
+Server regressions can be reproduced from source: install `v5_server/tests/requirements.txt`, then run `python v5_server/run_tests.py` from the repository root. The runner generates a synthetic test database and discovers the complete suite. See the [test and seed generator guide](v5_server/tests/README.md).
+
 
 > This project is maintained by one person. Recent commitments may slow down bug investigation and fixes; thank you for your patience and understanding.
 
