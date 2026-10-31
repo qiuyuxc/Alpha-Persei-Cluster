@@ -24,14 +24,15 @@ def _get_user_level_cfg():
     global _USER_LEVEL_SETTINGS_CACHE
     if _USER_LEVEL_SETTINGS_CACHE is None:
         p = os.path.join(_DIR, "user_level_setting.json")
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    _USER_LEVEL_SETTINGS_CACHE = {int(k): int(v) for k, v in json.load(f).items()}
-            except Exception:
-                _USER_LEVEL_SETTINGS_CACHE = {}
-        else:
-            _USER_LEVEL_SETTINGS_CACHE = {}
+        with open(p, "r", encoding="utf-8-sig") as f:
+            raw = json.load(f)
+        cfg = {int(k): v for k, v in raw.items()}
+        if (not cfg or len(cfg) != len(raw)
+                or set(cfg) != set(range(1, max(cfg) + 1))
+                or any(type(v) is not int or v < 0 for v in cfg.values())
+                or any(cfg[level] == 0 for level in range(1, max(cfg)))):
+            raise ValueError("玩家经验曲线配置无效")
+        _USER_LEVEL_SETTINGS_CACHE = cfg
     return _USER_LEVEL_SETTINGS_CACHE
 
 
@@ -232,13 +233,12 @@ class InventoryService:
 
     @classmethod
     def calc_player_level(cls, total_exp):
-        """根据 user_level_setting.json 累加总经验计算玩家真实等级。"""
+        """Match LvTools.CheckUserExp using total experience and unshifted Lua ids."""
         cfg = _get_user_level_cfg()
-        if not cfg:
-            return 92
         lv = 1
         rem = int(total_exp or 0)
-        while lv in cfg and rem >= cfg[lv]:
+        # Lua stops when the next level is absent or has a zero-exp sentinel.
+        while lv + 1 in cfg and cfg[lv + 1] != 0 and rem >= cfg[lv]:
             rem -= cfg[lv]
             lv += 1
         return lv
@@ -451,9 +451,14 @@ class InventoryService:
                 if iid == 12:  # 管理员/玩家账号经验 (CURRENCY_TYPE_USER_EXP)
                     u_rows = db.query("SELECT exp, level FROM users WHERE uid=?", (uid,))
                     old_exp = int(u_rows[0]["exp"] or 0) if u_rows else 0
-                    old_lv = int(u_rows[0]["level"] or 1) if u_rows else 1
+                    # Correcting a stale stored level must not replay historical gifts.
+                    old_lv = cls.calc_player_level(old_exp)
                     new_exp = old_exp + count
                     new_lv = cls.calc_player_level(new_exp)
+                    # Validate the entire reward before writing experience or balances.
+                    if new_lv > old_lv:
+                        import fatigue_service as _fs
+                        stamina_gain = _fs.get_level_up_fatigue_reward(old_lv, new_lv)
                     db.execute("UPDATE users SET exp=?, level=? WHERE uid=?", (new_exp, new_lv, uid))
                     # 保持 currency 表中的 id=12 严格等于实际 total_exp (用于 sc_15009/sc_17023 全量与差量)
                     db.execute(
@@ -461,10 +466,8 @@ class InventoryService:
                         "ON CONFLICT(uid, id) DO UPDATE SET num = excluded.num, update_ts = excluded.update_ts",
                         (uid, new_exp, now),
                     )
-                    # 若升级，按各级上限累加赠送体力、时间戳清零进入静止态，并广播升级事件
+                    # 升级奖励与体力上限独立；只累加本次跨过的等级奖励。
                     if new_lv > old_lv:
-                        import fatigue_service as _fs
-                        stamina_gain = sum(_fs.get_max_fatigue_by_level(lvl) for lvl in range(old_lv + 1, new_lv + 1))
                         _fs.on_fatigue_grant(db, uid, stamina_gain, now_ts=now)
                         summary["currency"][4] = summary["currency"].get(4, 0) + stamina_gain
                         if hasattr(ctx, "touched_items") and ctx.touched_items is not None:

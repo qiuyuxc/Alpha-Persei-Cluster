@@ -106,7 +106,7 @@ def build_battle_hero_bytes(db_conn, uid, hid, *, hero_type=1):
     """构建单个出战英雄 battle_hero_net_rec
 
     f1 = hero_base_info (HERO_BASE_INFO 完整养成)
-    f2 = hero_type (1=自有角色)
+    f2 = hero_type (1=自有角色，2=试用，试用 f1.id 保留模板编号)
     f3 = equip_list (repeated battle_equip_net_rec 刻印)
     f4 = dorm_level (0)
     f5 = trust (hero_trust_net_rec 好感度)
@@ -146,10 +146,13 @@ def build_battle_hero_bytes(db_conn, uid, hid, *, hero_type=1):
         skin_id = int(std_info.get("skin_id") or real_hid)
         h_lv = int(std_info.get("hero_lv") or 80)
         s_lv = int(std_info.get("star_lv") or 500)
-        b_lv = int(std_info.get("hero_break") or std_info.get("break_lv") or 6)
+        b_lv = int(std_info.get("hero_break", 6))
         sk_lv = int(std_info.get("skill_lv") or 35)
         w_lv = int(std_info.get("weapon_level") or 60)
-        w_brk = int(std_info.get("weapon_break") or 4)
+        w_brk = int(std_info.get("weapon_break", 4))
+        level_cfgs = _trial_meta["level_cfgs"]
+        hero_exp = int(level_cfgs[str(h_lv)]["hero_exp"])
+        weapon_exp = int(level_cfgs[str(w_lv)]["weapon_exp"])
         w_key = int(std_info.get("weapon_key") or 0)
         w_stage = int(std_info.get("weapon_stage") or 1)
         w_mod = int(std_info.get("weapon_module_level") or 0)
@@ -169,7 +172,7 @@ def build_battle_hero_bytes(db_conn, uid, hid, *, hero_type=1):
             skill_b += _pb_msg(5, _pb_varint(1, real_hid * 100 + 1) + _pb_varint(2, sk_lv))
 
         # 2. 武器与专属钥从
-        weapon_b = _pb_varint(1, w_lv) + _pb_varint(2, w_brk) + _pb_varint(3, 0)
+        weapon_b = _pb_varint(1, weapon_exp) + _pb_varint(2, w_brk) + _pb_varint(3, 0)
         servant_b = _pb_varint(1, w_key) + _pb_varint(2, w_stage)
 
         # 3. 神格 (using_astrolabe & unlock_astrolabe)
@@ -198,8 +201,9 @@ def build_battle_hero_bytes(db_conn, uid, hid, *, hero_type=1):
             if lvl > 0:
                 elem_b += _pb_msg(14, _pb_varint(1, idx + 1) + _pb_varint(2, lvl))
 
-        hbi_body = (_pb_varint(1, real_hid) + _pb_varint(2, h_lv) +
-                    _pb_varint(3, s_lv) + _pb_varint(4, 0) + skill_b +
+        # HeroStandardSystemCfg[base.id].hero_id resolves the type-2 template.
+        hbi_body = (_pb_varint(1, int(hid)) + _pb_varint(2, h_lv) +
+                    _pb_varint(3, s_lv) + _pb_varint(4, hero_exp) + skill_b +
                     _pb_msg(6, weapon_b) + _pb_msg(7, servant_b) +
                     astro_b +
                     _pb_varint(10, skin_id) + _pb_varint(11, b_lv) +
@@ -210,7 +214,7 @@ def build_battle_hero_bytes(db_conn, uid, hid, *, hero_type=1):
 
         body = bytearray()
         body += _pb_msg(1, hbi_body)
-        body += _pb_varint(2, int(hid))
+        body += _pb_varint(2, 2)
 
         # 6. 专属试用刻印与赋能词条（GetConstructVirtualEquips）
         eq_stars = _trial_meta.get("eq_stars", {}) if _trial_meta else {}
@@ -224,7 +228,7 @@ def build_battle_hero_bytes(db_conn, uid, hid, *, hero_type=1):
                 star = eq_stars.get(str(p_id)) or 5
                 exp_info = exp_cfgs.get(str(eq_lv)) or exp_cfgs.get(eq_lv) or {}
                 eq_exp = exp_info.get(f"exp_sum_{star}") or 0
-                now_brk = max(0, b_lv - 1)
+                now_brk = max(0, int(std_info.get("break_lv", 1)) - 1)
 
                 eq_b = bytearray()
                 eq_b += _pb_varint(1, int(hid) * 100 + (idx + 1))
@@ -324,12 +328,14 @@ def build_battle_hero_bytes(db_conn, uid, hid, *, hero_type=1):
     return bytes(body)
 
 
-def build_player_net_rec_bytes(db_conn, uid, hero_ids, *, hero_details=None):
-    """构建标准 player_net_rec 字节 (供 sc_54003 / sc_54039 使用)"""
+def build_player_net_rec_bytes(db_conn, uid, hero_ids, *, hero_details=None, strict=False):
+    """构建 player_net_rec；开战 strict 模式要求账号与出战角色齐全。"""
     raw_conn = db_conn._conn() if hasattr(db_conn, "_conn") else db_conn
     cur = raw_conn.cursor()
     cur.execute("SELECT * FROM users WHERE uid=? LIMIT 1;", (uid,))
     user_row = cur.fetchone()
+    if strict and (not uid or not user_row or not hero_ids):
+        raise ValueError('Battle initialization requires the account and its hero team')
     if not user_row:
         cur.execute("SELECT * FROM users LIMIT 1;")
         user_row = cur.fetchone()
@@ -343,6 +349,8 @@ def build_player_net_rec_bytes(db_conn, uid, hero_ids, *, hero_details=None):
     details = {hero['hero_id']: hero for hero in (hero_details or [])}
     for hid in (hero_ids or []):
         if not hid:
+            if strict:
+                raise ValueError('Battle initialization contains an empty hero')
             continue
         hero = details.get(hid, {})
         owner = hero.get('owner_id') if hero.get('hero_type') == 3 else uid
@@ -350,6 +358,8 @@ def build_player_net_rec_bytes(db_conn, uid, hero_ids, *, hero_details=None):
             import social_service as social
             social.require_assist(db_conn, uid, owner, hid)
         bh_b = build_battle_hero_bytes(raw_conn, owner, hid, hero_type=hero.get('hero_type', 1))
+        if strict and not bh_b:
+            raise ValueError(f'Battle hero {hid} could not be built')
         if bh_b:
             pbi += _pb_msg(4, bh_b)
 
@@ -368,7 +378,7 @@ def build_player_net_rec_bytes(db_conn, uid, hero_ids, *, hero_details=None):
 
 def build_sc_54003_dynamic(db_conn, uid, hero_ids, *, hero_details=None):
     """动态生成 sc_54003 战斗初始化完整下行报文"""
-    pi = build_player_net_rec_bytes(db_conn, uid, hero_ids, hero_details=hero_details)
+    pi = build_player_net_rec_bytes(db_conn, uid, hero_ids, hero_details=hero_details, strict=True)
     # sc_54003 { f1 = player_info }
     return _pb_msg(1, pi)
 

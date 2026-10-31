@@ -43,12 +43,45 @@ def _task_parameter_values(raw_value):
     return values
 
 
+def _shop_task_matches(raw_value, shop_id):
+    """Condition 600 uses [shop_ids, 0]; also accept legacy flat shop lists."""
+    if raw_value is None or raw_value == "":
+        return True
+    try:
+        if isinstance(raw_value, str):
+            raw_value = raw_value.strip()
+            if not raw_value:
+                return True
+            try:
+                values = json.loads(raw_value)
+            except ValueError:
+                values = [int(value.strip()) for value in raw_value.split(',')]
+        else:
+            values = raw_value
+        if not isinstance(values, (list, tuple)):
+            values = [values]
+        if values and isinstance(values[0], (list, tuple)):
+            shops = values[0]
+            if any(int(value) != 0 for value in values[1:]):
+                return False
+        else:
+            shops = values
+        shops = [int(value) for value in shops]
+        if any(value < 0 for value in shops):
+            return False
+        restrictions = {value for value in shops if value > 0}
+        return not restrictions or (shop_id is not None and int(shop_id) in restrictions)
+    except (TypeError, ValueError):
+        return False
+
+
 def _trigger_task_condition(db, uid, condition, delta=1, param=None, set_value=False,
-                            task_type_filter=None, activity_zero_only=False):
+                            task_type_filter=None, activity_zero_only=False,
+                            param_candidates=None):
     """
     通用任务条件进度推进核心函数。
     1. 查询所有未领取的、匹配 condition 的任务；
-    2. 匹配 additional_parameter（如有）；
+    2. 匹配 additional_parameter（如有），任一候选参数匹配时只推进一次；
     3. 计算 new_progress = min(need, old_progress + delta)；
     4. 若有真实变化，原子更新数据库并收集；
     5. 返回变化列表: [{id: tid, progress: new_prog, complete_flag: 0}]
@@ -115,6 +148,9 @@ def _trigger_task_condition(db, uid, condition, delta=1, param=None, set_value=F
             stage_ids = _task_parameter_values(param_str)
             if stage_id <= 0 or stage_id not in stage_ids:
                 continue
+        elif cond_int == 600:
+            if not _shop_task_matches(param_str, param):
+                continue
         # 校验 additional_parameter（如体力/金币/特定关卡类型等）
         elif param_str:
             try:
@@ -130,7 +166,8 @@ def _trigger_task_condition(db, uid, condition, delta=1, param=None, set_value=F
                 # 过滤有效限制项（0 表示通配/不限类型）
                 effective_restrictions = [x for x in p_list if x != 0]
                 if effective_restrictions:
-                    if param is None or (int(param) not in p_list):
+                    candidates = (param,) if param_candidates is None else param_candidates
+                    if not any(value is not None and int(value) in p_list for value in candidates):
                         continue
             except Exception:
                 pass
@@ -329,7 +366,7 @@ def on_gold_cost(ctx, uid, amount=1, **kwargs):
 @bus.subscribe(Events.SHOP_BUY)
 def on_shop_buy(ctx, uid, count=1, **kwargs):
     """商店购买物品 (cond=600: 6005 需1次)"""
-    c = _trigger_task_condition(ctx.db, uid, condition=600, delta=count)
+    c = _trigger_task_condition(ctx.db, uid, condition=600, delta=count, param=kwargs.get('shop_id'))
     _push_task_diff(ctx, uid, c)
 
 
@@ -496,11 +533,10 @@ def on_activity_point_gain(ctx, uid, pt_id=1, amount=0, item_id=22, **kwargs):
     """获得活跃度/活动PT (cond=300: 71002 战令每日活跃度达到100, 100016 乐园印戳20000; cond=2021: 10008/10009 领营收10000/40000)"""
     if amount <= 0:
         return
-    c1 = _trigger_task_condition(ctx.db, uid, condition=300, delta=amount, param=item_id)
-    c2 = _trigger_task_condition(ctx.db, uid, condition=300, delta=amount, param=pt_id)
-    c3 = _trigger_task_condition(ctx.db, uid, condition=300, delta=amount, param=None)
-    c4 = _trigger_task_condition(ctx.db, uid, condition=2021, delta=amount, param=item_id)
-    _push_task_diff(ctx, uid, c1 + c2 + c3 + c4)
+    changed = _trigger_task_condition(ctx.db, uid, condition=300, delta=amount,
+                                      param_candidates=(item_id, pt_id))
+    changed += _trigger_task_condition(ctx.db, uid, condition=2021, delta=amount, param=item_id)
+    _push_task_diff(ctx, uid, changed)
 
 
 @bus.subscribe(Events.MONSTER_KILL)

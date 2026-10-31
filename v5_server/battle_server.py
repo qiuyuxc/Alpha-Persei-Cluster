@@ -361,6 +361,7 @@ class BattleServer:
               "rcv_nxt": 0, "recv_buf": {}, "send_buf": {},
               "pkt_buf": b"", "pkt_frg": None, "duplicate_pushes": 0,
               "battle_events": {}}
+        self._pong_seq.pop(client_id, None)
         self._conns[client_id] = st
         return st
 
@@ -454,6 +455,8 @@ class BattleServer:
             ping_started = time.monotonic()
             ct = parse_ping(f["body"])
             with self._lock:
+                if self._conns.get(st["client_id"]) is not st:
+                    return
                 n = self._pong_seq.get(st["client_id"], 0)
                 self._pong_seq[st["client_id"]] = n + 1
             if self.server_ts:
