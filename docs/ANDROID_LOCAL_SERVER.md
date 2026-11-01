@@ -1,12 +1,12 @@
-# 安卓游戏与服务端同机运行（本地模式测试版）
+# 安卓游戏与服务端同机运行
 
-`1.1-local.2` 连接助手增加手机本地模式，让游戏的 SDK HTTPS 443 和辅助 HTTP 80 经本地 VPN 转到同机 Termux 的 8443 和 8080。服务端使用 `--android-local` 向客户端下发本机地址，网关、游戏 TCP 和战斗 UDP 直接使用高位端口。
+连接助手 **1.1 正式版**增加手机本地模式，让游戏的 SDK HTTPS 443 和辅助 HTTP 80 经本地 VPN 转到同机 Termux 的 8443 和 8080。服务端使用 `--android-local` 向客户端下发本机地址，网关、游戏 TCP 和战斗 UDP 直接使用高位端口。
 
-2026-11-01 已在 vivo（Android 16 / API 36）使用 `1.1-local.2` 成功完成 Unity 客户端同机登录，并通过战场清扫关卡的实际战斗与结算。登录和关卡通过由用户实测确认，服务端日志记录了本机 gateway/game 鉴权、登录洪流、心跳和战斗结果。这一阶段仍沿用原资源下载地址。
+2026-11-01 已在 vivo（Android 16 / API 36）成功完成 Unity 客户端同机登录，并通过战场清扫关卡的实际战斗与结算。1.1 沿用这次实测通过的连接逻辑，服务端日志记录了本机 gateway/game 鉴权、登录洪流、心跳和战斗结果。这一阶段仍沿用原资源下载地址。
 
 ## 准备本机实例
 
-需要 [用户 CA 版客户端](ANDROID_SETUP.md)、ARM64 本地模式测试助手、自己的完整数据库，以及与客户端对应的资源清单。公开测试种子只用于技术验证，不能替代可游玩的完整存档和资源。
+需要 [用户 CA 版客户端](ANDROID_SETUP.md)、ARM64 连接助手 1.1、自己的完整数据库，以及与客户端对应的资源清单。公开测试种子只用于技术验证，不能替代可游玩的完整存档和资源。
 
 将当前源码放入 Termux 可读目录。服务端依赖 Python、Flask 和 cryptography；已有 Linux/PRoot Python 环境可按 `v5_server/requirements.txt` 安装。直接使用 Termux 时可准备：
 
@@ -35,7 +35,7 @@ python v5_server/main.py --android-local --db /path/to/account.db --res-version 
 
 ## 连接游戏
 
-1. 安装 `AlphaPersei-Connect-v1.1-local.2.apk`。测试包沿用已有助手签名，可在 ARM64 设备覆盖既有版本。
+1. 从 [1.1 发行页](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-connect-v1.1) 下载并安装 `AlphaPersei-Connect-v1.1.apk`。正式包沿用已有助手签名，可在 ARM64 设备覆盖既有版本。
 2. 用手机浏览器打开 `http://127.0.0.1:8080/cert`，下载并在系统安全设置中安装这个本机服务端的 CA。也可以直接取 `v5_server/sdk_ca.crt` 安装。
 3. 停用其他 VPN 和既有 DNS 改写，将系统“私人 DNS / 私有 DNS”设为“关闭”。
 4. 在助手中选择“连接方式 → 手机本地”，点击“开启连接”并允许系统 VPN 请求。

@@ -48,18 +48,18 @@ openssl x509 -in v5_server/sdk_ca.crt -noout -fingerprint -sha256
 
 ## 3. 选择连接方式
 
-### 免 root：连接助手 1.0
+### 免 root：连接助手 1.1
 
-1. 从 [助手 1.0 发行页](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-connect-v1.0) 下载并安装 APK，或按 [助手构建说明](../android-connection-helper/README.md) 自行生成签名包。助手要求 Android 7+，无需 root 和 LSPosed，不提供 GM 入口。
+1. 从 [助手 1.1 发行页](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-connect-v1.1) 下载并安装 `AlphaPersei-Connect-v1.1.apk`，或按 [助手构建说明](../android-connection-helper/README.md) 自行生成签名包。1.1 发行包支持 ARM64 Android 7+，无需 root 和 LSPosed，不提供 GM 入口。
 2. 关闭其他 VPN，将系统“私人 DNS / 私有 DNS”设为关闭。助手使用系统本地 VPN，不能与其他 VPN 同时开启。
 3. 打开“深空连接助手”，输入手机可访问的服务器 IPv4，点击“开启连接”，允许系统 VPN 请求。
 4. 完全退出后重新打开游戏，后台保留助手。不要启用“无 VPN 时阻止连接”。
 
-助手只接管游戏的 DNS，登录与活动网关域名指向填写的服务器，游戏连接和资源下载走原网络。证书安装和用户 CA 版游戏依然需要。“连接已开启”表示本地连接服务运行，并不表示已经通过服务器登录。
+外部服务器模式只接管游戏的 DNS，登录与活动网关域名指向填写的服务器，游戏连接和资源下载走原网络。证书安装和用户 CA 版游戏依然需要。“连接已开启”表示本地连接服务运行，并不表示已经通过服务器登录。
 
-游戏和服务端需要放在同一台手机时，使用连接助手 `1.1-local.2` 的“手机本地”模式，并按 [安卓同机服务端说明](ANDROID_LOCAL_SERVER.md) 准备本机高位端口和 CA。1.0 正式版用于外部服务器连接。
+游戏和服务端需要放在同一台手机时，使用连接助手 1.1 的“手机本地”模式，并按 [安卓同机服务端说明](ANDROID_LOCAL_SERVER.md) 准备本机高位端口和 CA。1.1 同时支持外部服务器连接。
 
-2026-10-31 用户已确认 VPN 进服、连接开启和停止正常。当前 1.0 沿用已验收的连接逻辑，可使用相同签名覆盖安装 0.1 / 0.1.1 并保留配置。DNS 专项测试、Android 编译和 APK 签名均有验证记录。
+2026-10-31 已实测外部模式进服、连接开启和停止正常；2026-11-01 已实测手机本地模式登录及战场清扫关卡的战斗与结算。1.1 沿用相同签名，ARM64 设备可覆盖既有版本并保留配置。DNS 与本地转发专项检查、Android 编译和 APK 签名均有验证记录。
 
 ### Root：LSPosed 模块
 

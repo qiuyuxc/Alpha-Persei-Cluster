@@ -133,7 +133,7 @@ public final class MainActivity extends Activity {
         LinearLayout support = ui.card(body);
         ui.row(support, "连接诊断", "查看运行状态与解析计数", this::showDiagnostics);
         ui.gap(body, 24);
-        TextView footer = ui.text("1.1-local.2 本地模式测试版", 12, ui.secondary, false);
+        TextView footer = ui.text("1.1", 12, ui.secondary, false);
         footer.setGravity(Gravity.CENTER); body.addView(footer);
         setContentView(scroll);
         if (saved != null) {
@@ -167,7 +167,7 @@ public final class MainActivity extends Activity {
         ui.message("手机本地服务", "先按项目的安卓本地说明准备数据库和资源，并在本机 Termux 中使用 --android-local 启动服务端。"
                 + "\n\n在系统安全设置中安装这个本地服务端的 CA 证书；证书下载地址为 http://127.0.0.1:8080/cert。"
                 + "\n\n助手会连接本机的 8443 / 8080 端口。保持 Termux 与助手后台运行，再完全退出并重开游戏。"
-                + "\n\n本阶段用于验证同机登录，资源下载仍需要网络。");
+                + "\n\n请在系统中允许 Termux 和助手后台运行，资源下载仍需要网络。");
     }
 
     private void editAddress(String draft) {
