@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="io.github.qiuyuxc.agconnect" android:versionCode="3" android:versionName="1.0">
+    package="io.github.qiuyuxc.agconnect" android:versionCode="5" android:versionName="1.1-local.2">
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -11,7 +11,7 @@
         <package android:name="com.yongshi.tenojo.ys" />
     </queries>
     <application android:label="深空连接助手" android:icon="@drawable/ic_connection"
-        android:allowBackup="false" android:supportsRtl="true"
+        android:allowBackup="false" android:supportsRtl="true" android:extractNativeLibs="true"
         android:theme="@style/ConnectionTheme"
         android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true">
@@ -28,7 +28,7 @@
             </intent-filter>
             <meta-data android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON" android:value="false" />
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-started local VPN for game-only DNS redirection; no remote VPN server" />
+                android:value="User-started game-only DNS VPN with optional SDK forwarding to a local Termux server" />
         </service>
     </application>
 </manifest>

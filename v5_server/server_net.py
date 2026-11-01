@@ -573,9 +573,9 @@ class GatewayHandler(socketserver.StreamRequestHandler):
 
 
 def start_gateway_server(port, core, db, generator, codec_encode, codec_decode,
-                         material=None, host_ip=None):
+                         material=None, host_ip=None, bind_host="0.0.0.0"):
     """启动 gateway TCP 服务器（登录握手）。"""
-    srv = ThreadedServer(("0.0.0.0", port), GatewayHandler)
+    srv = ThreadedServer((bind_host, port), GatewayHandler)
     srv.core = core
     srv.db = db
     srv.generator = generator
@@ -1510,17 +1510,17 @@ def build_https_app(core, material=None, game_port=8105, gw_port=8102, host_ip=N
     return app
 
 
-def start_https(app, port, cert_file=None, key_file=None):
-    """启动 Flask HTTPS（SDK 层）。端口 443 需管理员。
-    证书：默认用 v5 目录的 sdk_cert.pem/sdk_key.pem（客户端需信任该证书）。"""
+def make_sdk_servers(app, port, cert_file=None, key_file=None, http_port=80, bind_host="0.0.0.0", require_http=True):
+    """绑定 SDK HTTPS 与可选辅助 HTTP；任一监听失败时释放已绑定端口。"""
     cert_file = cert_file or os.path.join(os.path.dirname(os.path.abspath(__file__)), "sdk_cert.pem")
     key_file = key_file or os.path.join(os.path.dirname(os.path.abspath(__file__)), "sdk_key.pem")
     if not (os.path.exists(cert_file) and os.path.exists(key_file)):
         raise FileNotFoundError(f"证书缺失: {cert_file} / {key_file}")
-    ssl_ctx = (cert_file, key_file)
+    import ssl
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_ctx.load_cert_chain(cert_file, key_file)
 
     from werkzeug.serving import make_server, WSGIRequestHandler
-    import threading
 
     class _FilteredWSGIRequestHandler(WSGIRequestHandler):
         def setup(self):
@@ -1544,35 +1544,51 @@ def start_https(app, port, cert_file=None, key_file=None):
             # SDK query strings may contain login tokens. Log the path only.
             self.log('info', '"%s %s" %s %s', self.command, self.path.split('?', 1)[0], code, size)
 
-    # 同时在后台启动 HTTP:80 监听，专供 C# OSS SDK 免证书免 DNS 极速直传
-    def _start_http():
-        try:
-            srv_http = make_server("0.0.0.0", 80, app, request_handler=_FilteredWSGIRequestHandler, threaded=True)
-            try:
-                srv_http.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)
-            except Exception:
-                pass
-            srv_http.serve_forever()
-        except Exception as e:
-            print(f"[V5] HTTP:80 监听跳过: {e}")
-
-    threading.Thread(target=_start_http, daemon=True).start()
-
+    srv_http = None
     try:
-        srv_https = make_server("0.0.0.0", port, app, request_handler=_FilteredWSGIRequestHandler, ssl_context=ssl_ctx, threaded=True)
-        try:
-            srv_https.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)
-        except Exception:
-            pass
+        if http_port:
+            try:
+                srv_http = make_server(bind_host, http_port, app, request_handler=_FilteredWSGIRequestHandler, threaded=True)
+            except (OSError, SystemExit) as exc:
+                if require_http:
+                    raise
+                print(f"[V5] HTTP:{http_port} 监听跳过: {exc}")
+        srv_https = make_server(bind_host, port, app, request_handler=_FilteredWSGIRequestHandler,
+                               ssl_context=ssl_ctx, threaded=True)
+    except BaseException as exc:
+        if srv_http is not None:
+            srv_http.server_close()
+        if isinstance(exc, SystemExit):
+            raise OSError(f"SDK 端口绑定失败: {bind_host}:{port} / HTTP:{http_port}") from exc
+        raise
+    for server in (srv_https, srv_http):
+        if server is not None:
+            try:
+                server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)
+            except OSError:
+                pass
+    return srv_https, srv_http
+
+
+def start_https(app, port, cert_file=None, key_file=None, http_port=80, bind_host="0.0.0.0"):
+    """启动 SDK 服务；默认仍监听 HTTPS:443 与辅助 HTTP:80。"""
+    import threading
+    srv_https, srv_http = make_sdk_servers(app, port, cert_file, key_file, http_port, bind_host, require_http=False)
+    if srv_http is not None:
+        threading.Thread(target=srv_http.serve_forever, daemon=True).start()
+    try:
         srv_https.serve_forever()
-    except Exception as e:
-        print(f"[V5] HTTPS:{port} 异常: {e}")
+    finally:
+        srv_https.server_close()
+        if srv_http is not None:
+            srv_http.shutdown()
+            srv_http.server_close()
 
 
 def start_game_server(port, core, db, generator, codec_encode, codec_decode,
-                      replay=None, material=None, frame_delay=0.001):
+                      replay=None, material=None, frame_delay=0.001, bind_host="0.0.0.0"):
     """启动 game TCP 服务器（main 装配用）。返回 server 对象（serve_forever 前）。"""
-    srv = ThreadedServer(("0.0.0.0", port), GameHandler)
+    srv = ThreadedServer((bind_host, port), GameHandler)
     srv.core = core
     srv.db = db
     srv.generator = generator

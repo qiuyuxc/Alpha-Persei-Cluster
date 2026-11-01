@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build/test the no-root Android connection helper (Java + Android SDK, no NDK)."""
+"""Build/test the no-root Android connection helper (Java + optional native local TCP stack)."""
 import argparse
 import hashlib
 import json
@@ -14,8 +14,8 @@ import zipfile
 ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
-CORE = ("ServerAddress", "DnsMessage", "Ipv4Packet", "DnsTunnel", "DnsForwarder")
-TESTS = ("DnsMessageTest", "DnsTunnelTest", "DnsForwarderTest")
+CORE = ("ServerAddress", "DnsMessage", "Ipv4Packet", "DnsTunnel", "DnsForwarder", "LocalServerConfig", "LocalForwarder", "NativeTunnel", "TcpSockets")
+TESTS = ("DnsMessageTest", "DnsTunnelTest", "DnsForwarderTest", "LocalForwarderTest", "TcpSocketsTest")
 
 
 def run(command, log):
@@ -40,6 +40,7 @@ def main():
     parser.add_argument("--keystore", type=Path, help="PKCS12 key; omit for an unsigned APK")
     parser.add_argument("--key-alias", default="connection")
     parser.add_argument("--password-file", type=Path)
+    parser.add_argument("--native-dir", type=Path, help="Directory containing ABI/libagconnect-tun.so from native/build.py")
     args = parser.parse_args()
     if bool(args.keystore) != bool(args.password_file):
         parser.error("--keystore and --password-file must be supplied together")
@@ -59,6 +60,11 @@ def main():
     (BUILD / "test-result.json").write_text(json.dumps({"tests": results, "passed": True}, indent=2) + "\n")
     if args.test_only:
         return
+    if not args.native_dir:
+        parser.error("Build the local TCP library with native/build.py and supply --native-dir")
+    libraries = sorted(args.native_dir.resolve().glob("*/libagconnect-tun.so"))
+    if not libraries:
+        parser.error("No ABI/libagconnect-tun.so found in --native-dir")
 
     android = args.sdk.resolve() / "platforms/android-35/android.jar"
     if args.termux_prefix:
@@ -89,6 +95,8 @@ def main():
     with zipfile.ZipFile(BUILD / "resources.apk") as resources, zipfile.ZipFile(unsigned, "w") as output:
         entries = [(i.filename, resources.read(i.filename), i.compress_type) for i in resources.infolist()]
         entries += [(p.name, p.read_bytes(), zipfile.ZIP_DEFLATED) for p in sorted((BUILD / "dex").glob("*.dex"))]
+        entries += [("lib/" + p.parent.name + "/" + p.name, p.read_bytes(), zipfile.ZIP_DEFLATED) for p in libraries]
+        entries += [("assets/THIRD_PARTY_NOTICES.txt", (ROOT / "native/THIRD_PARTY_NOTICES.txt").read_bytes(), zipfile.ZIP_DEFLATED)]
         for name, data, compression in entries:
             info = zipfile.ZipInfo(name, date_time=(2026, 10, 31, 0, 0, 0))
             info.compress_type = compression
@@ -124,8 +132,10 @@ def main():
     with zipfile.ZipFile(apk) as archive, apk.open("rb") as file:
         assert archive.testzip() is None
         assert "classes.dex" in archive.namelist()
-        assert not any(name.endswith((".p12", ".pass", ".jks", ".class")) or name.startswith("lib/")
+        assert not any(name.endswith((".p12", ".pass", ".jks", ".class"))
                        for name in archive.namelist())
+        assert sorted(name for name in archive.namelist() if name.startswith("lib/")) == [
+            "lib/" + p.parent.name + "/" + p.name for p in libraries]
         for info in archive.infolist():
             if info.compress_type == zipfile.ZIP_STORED:
                 file.seek(info.header_offset)
@@ -137,9 +147,12 @@ def main():
         "version_code": int(manifest.get(ns + "versionCode")),
         "bytes": apk.stat().st_size, "sha256": hashlib.sha256(apk.read_bytes()).hexdigest(),
         "signed": bool(args.keystore), "signature_schemes_verified": ["v1", "v2", "v3"] if args.keystore else [],
-        "min_sdk": 24, "target_sdk": 35, "native_libraries": False, "root_required": False,
+        "min_sdk": 24, "target_sdk": 35, "native_libraries": True,
+        "abis": [p.parent.name for p in libraries], "root_required": False,
         "game_package": "com.yongshi.tenojo.ys",
         "redirected_hosts": ["open.ys4fun.com", "prod-api-activity.ys4fun.com"],
+        "local_mode": {"virtual_sdk_ip": "10.111.0.3", "tcp_ports": {"443": 8443, "80": 8080},
+                       "gateway_game_battle": "direct loopback", "tls": "opaque byte forwarding"},
         "tests": results, "device_validation": {"performed_by_build": False},
     }
     (DIST / "validation.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -20,10 +20,13 @@ public final class ServerAddress {
         int first = Integer.parseInt(parts[0]);
         if (first == 0 || first >= 224)
             throw new IllegalArgumentException("请填写可以连接的服务器地址");
-        if (host.equals(Ipv4Packet.DNS_ADDRESS) || host.equals(Ipv4Packet.INTERFACE_ADDRESS))
+        if (host.equals(Ipv4Packet.DNS_ADDRESS) || host.equals(Ipv4Packet.INTERFACE_ADDRESS)
+                || host.equals(LocalServerConfig.ADDRESS))
             throw new IllegalArgumentException("该地址供连接助手内部使用，请填写服务器实际地址");
         return new ServerAddress(host);
     }
+
+    public static ServerAddress local() { return new ServerAddress(LocalServerConfig.ADDRESS); }
 
     public static ServerAddress stored(String value) {
         try { return parse(value); }

@@ -29,9 +29,10 @@ public final class MainActivity extends Activity {
     private static final int VPN_REQUEST = 10, NOTIFICATION_REQUEST = 11;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private MiuixUi ui;
-    private TextView state, detail, addressSummary, stateMark;
+    private TextView state, detail, addressSummary, stateMark, modeSummary;
     private Button toggle, launch;
     private String pendingServer;
+    private boolean pendingLocal;
     private boolean permissionPending;
     private boolean lastRunning;
     private ConnectionService.Status lastStatus;
@@ -116,7 +117,11 @@ public final class MainActivity extends Activity {
 
         ui.section(body, "服务器");
         LinearLayout server = ui.card(body);
-        addressSummary = ui.row(server, "服务器地址", "点击填写 IPv4 地址", () -> editAddress(null));
+        modeSummary = ui.row(server, "连接方式", "外部服务器", this::chooseMode);
+        ui.divider(server);
+        addressSummary = ui.row(server, "服务器地址", "点击填写 IPv4 地址", () -> {
+            if (localMode()) showLocalGuide(); else editAddress(null);
+        });
         ui.section(body, "连接准备");
         LinearLayout preparation = ui.card(body);
         ui.row(preparation, "使用说明", "用户 CA 版游戏、证书与连接步骤", this::showGuide);
@@ -128,17 +133,42 @@ public final class MainActivity extends Activity {
         LinearLayout support = ui.card(body);
         ui.row(support, "连接诊断", "查看运行状态与解析计数", this::showDiagnostics);
         ui.gap(body, 24);
-        TextView footer = ui.text("1.0", 12, ui.secondary, false);
+        TextView footer = ui.text("1.1-local.2 本地模式测试版", 12, ui.secondary, false);
         footer.setGravity(Gravity.CENTER); body.addView(footer);
         setContentView(scroll);
         if (saved != null) {
             pendingServer = saved.getString("pending");
+            pendingLocal = saved.getBoolean("pending_local");
             permissionPending = saved.getBoolean("permission_pending");
             if (saved.containsKey("address_draft")) handler.post(() -> editAddress(saved.getString("address_draft")));
         }
     }
 
     private String server() { return getPreferences(MODE_PRIVATE).getString("server", ""); }
+    private boolean localMode() { return getPreferences(MODE_PRIVATE).getBoolean("local", false); }
+
+    private void chooseMode() {
+        if (ConnectionService.status.running || permissionPending) {
+            ui.message("连接方式正在使用", "请先停止连接，再切换连接方式。"); return;
+        }
+        LinearLayout content = ui.column();
+        Dialog dialog = ui.dialog("连接方式", content);
+        ui.row(content, "外部服务器", "连接电脑或远程主机上的服务器", () -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("local", false).apply(); dialog.dismiss(); render();
+        });
+        ui.divider(content);
+        ui.row(content, "手机本地", "连接同一台手机上运行的 Termux 服务端", () -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("local", true).apply(); dialog.dismiss(); render();
+        });
+        dialog.show();
+    }
+
+    private void showLocalGuide() {
+        ui.message("手机本地服务", "先按项目的安卓本地说明准备数据库和资源，并在本机 Termux 中使用 --android-local 启动服务端。"
+                + "\n\n在系统安全设置中安装这个本地服务端的 CA 证书；证书下载地址为 http://127.0.0.1:8080/cert。"
+                + "\n\n助手会连接本机的 8443 / 8080 端口。保持 Termux 与助手后台运行，再完全退出并重开游戏。"
+                + "\n\n本阶段用于验证同机登录，资源下载仍需要网络。");
+    }
 
     private void editAddress(String draft) {
         if (ConnectionService.status.running) {
@@ -183,7 +213,8 @@ public final class MainActivity extends Activity {
     private void prepareConnection() {
         if (permissionPending) return;
         try {
-            pendingServer = ServerAddress.parse(server()).host;
+            pendingLocal = localMode();
+            pendingServer = pendingLocal ? ServerAddress.DEFAULT : ServerAddress.parse(server()).host;
             getPackageManager().getApplicationInfo(ConnectionService.GAME, 0);
             permissionPending = true; render();
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
@@ -209,7 +240,7 @@ public final class MainActivity extends Activity {
     private void startConnection() {
         if (pendingServer == null) { finishPermission(); return; }
         Intent service = new Intent(this, ConnectionService.class).setAction(ConnectionService.START)
-                .putExtra("server", pendingServer);
+                .putExtra("server", pendingServer).putExtra("local", pendingLocal);
         try {
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
             else startService(service);
@@ -217,7 +248,7 @@ public final class MainActivity extends Activity {
         finishPermission();
     }
 
-    private void finishPermission() { pendingServer = null; permissionPending = false; render(); }
+    private void finishPermission() { pendingServer = null; pendingLocal = false; permissionPending = false; render(); }
 
     @Override public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(code, permissions, results);
@@ -246,6 +277,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showGuide() {
+        if (localMode()) { showLocalGuide(); return; }
         ui.message("连接准备", "1. 安装用户 CA 版深空之眼（v0.308.301）。原版游戏仅安装 CA 仍可能无法登录。\n\n"
                 + "2. 在系统安全设置中安装自己服务器的 CA 证书。\n\n"
                 + "3. 关闭其他 VPN；将“私人 DNS / 私有 DNS”设为关闭。\n\n"
@@ -258,6 +290,10 @@ public final class MainActivity extends Activity {
         ui.message("连接诊断", current.title + "\n" + current.detail
                 + "\n\n已处理进服解析：" + ConnectionService.redirected.get()
                 + "\n其他解析失败：" + ConnectionService.dnsFailures.get()
+                + "\n本机转发连接：" + ConnectionService.localConnections.get()
+                + "\n本机连接失败：" + ConnectionService.localFailures.get()
+                + (ConnectionService.lastLocalFailure.isEmpty() ? ""
+                        : "\n最近失败原因：" + ConnectionService.lastLocalFailure)
                 + "\n\n计数在每次开启时重置。无法登录时，请检查游戏版本、服务器 CA、服务器地址、端口与账号。");
     }
 
@@ -275,7 +311,10 @@ public final class MainActivity extends Activity {
         }
         toggle.setText(permissionPending ? "等待系统授权…" : current.running ? "停止连接" : "开启连接");
         toggle.setEnabled(!permissionPending); toggle.setAlpha(permissionPending ? 0.55f : 1f);
-        String saved = server(); addressSummary.setText(saved.isEmpty() ? "点击填写 IPv4 地址" : saved);
+        boolean local = localMode();
+        modeSummary.setText(local ? "手机本地" : "外部服务器");
+        String saved = server(); addressSummary.setText(local ? "本机 · Termux"
+                : saved.isEmpty() ? "点击填写 IPv4 地址" : saved);
     }
 
     @Override protected void onResume() { super.onResume(); handler.post(refresh); }
@@ -287,6 +326,7 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onSaveInstanceState(Bundle out) {
         out.putString("pending", pendingServer); out.putBoolean("permission_pending", permissionPending);
+        out.putBoolean("pending_local", pendingLocal);
         if (addressDialog != null && addressDialog.isShowing()) out.putString("address_draft", addressInput.getText().toString());
         super.onSaveInstanceState(out);
     }

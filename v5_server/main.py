@@ -92,21 +92,16 @@ def _check_protocol_assets(encoder):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="V5 模块化服务器（MAIN 装配）")
-    ap.add_argument("--host-ip", default="", help="宿主机局域网 IP（默认自动检测真实 LAN IPv4）")
-    ap.add_argument("--https-port", type=int, default=443, help="HTTPS SDK/区服端口（443 需管理员）")
-    ap.add_argument("--gw-port", type=int, default=8102, help="gateway TCP 端口")
-    ap.add_argument("--game-port", type=int, default=8105, help="game TCP 端口")
+    import startup_network
+    startup_network.add_network_arguments(ap)
     ap.add_argument("--capture-cdn", action="store_true", default=True, help="开启官方 CDN 资源智能穿透与抓包（默认开启）")
     ap.add_argument("--no-capture-cdn", action="store_true", help="强制禁用官方 CDN 抓包（纯离线模式）")
-    ap.add_argument("--dns", action="store_true", help="启动内置轻量 UDP/TCP:53 DNS 服务器（需管理员权限）")
     ap.add_argument("--dns-upstream", action="append", type=IPv4Address, metavar="IPv4",
                     help="DNS 转发上游，可重复指定；本机代理改写公共 DNS 时可指定局域网路由器")
     ap.add_argument("--replay", default="", metavar="素材目录",
                     help="激活重放模块并指定素材目录（如 archive/20260805_全流程_服务器2_蒂卡拉/complete_replay）")
     ap.add_argument("--frame-delay", type=float, default=0.001, help="重放帧间延迟")
     ap.add_argument("--frame-override", default="", help="覆盖帧 bin（改数据）")
-    ap.add_argument("--battle-port", type=int, default=6105,
-                    help="UDP 动态战斗服端口（0=禁用；sc_54007 下发给客户端）")
     ap.add_argument("--db", default=os.environ.get("ACCOUNT_DB_PATH", "account.db"),
                     help="指定挂载的数据库文件路径或名称 (默认: account.db)")
     ap.add_argument("--res-version", default="auto",
@@ -120,6 +115,13 @@ def main(argv=None):
                     help="设置服务端日志打印级别 (默认: INFO, 可选: DEBUG, INFO, WARN, ERROR)")
     ap.add_argument("--self-check", action="store_true", help="自检并退出")
     args = ap.parse_args(argv)
+
+    import gen_cert
+    try:
+        network = startup_network.resolve_network_options(args, gen_cert.get_default_lan_ip)
+    except ValueError as exc:
+        ap.error(str(exc))
+    args.https_port, args.http_port = network.https_port, network.http_port
 
     if args.check_update:
         import res_version_manager
@@ -324,13 +326,14 @@ def main(argv=None):
         log(f"端口自检与进程守护就绪，当前服务单例 PID: {curr_pid}", module="PORT")
 
     # 执行端口预检与守护
-    _ensure_ports_clean([args.game_port, args.gw_port, args.https_port, args.battle_port, 80])
+    if not args.android_local:
+        _ensure_ports_clean([args.game_port, args.gw_port, args.https_port, args.battle_port, args.http_port])
 
     import gen_cert
     import cdn_proxy
-    host_ip = args.host_ip.strip() if args.host_ip else gen_cert.get_default_lan_ip()
+    host_ip = network.host_ip
     server_net.set_host_ip(host_ip)
-    cdn_proxy.set_source_ip(host_ip)
+    cdn_proxy.set_source_ip(network.cdn_source_ip)
 
     if args.no_capture_cdn:
         cdn_proxy.set_capture_enabled(False)
@@ -351,6 +354,8 @@ def main(argv=None):
             print(f"资源对齐: [未对齐/兜底] {client_info.get('detail')}")
         print(f"CDN 抓包: {'[已开启]' if cdn_proxy.is_capture_enabled() else '[已关闭]'}")
         print(f"局域网IP: {host_ip}")
+        print(f"监听地址: {network.bind_host}; HTTPS:{args.https_port}; HTTP:{args.http_port}")
+        print(f"CDN 出站: {network.cdn_source_ip or '自动检测实际网络地址'}")
         print(f"CORE 操作注册表: {sorted(core_mod.OPERATIONS.keys())}")
         print(f"代码版操作数: {len(core_mod.OPERATIONS)}")
         try:
@@ -463,22 +468,23 @@ def main(argv=None):
             args.battle_port,
             log=lambda *a, **k: log(*a, module="BATTLE"),
             server_ts=time.time,
-            bind_host="0.0.0.0")
+            bind_host=network.bind_host)
         # 132 结果由战斗服内部登记（get_result/pop_battle_result 取用），
         # 客户端战毕必然回发 cs_54032 → h_54032 结算引擎被动应答，无需 UDP 线程推 TCP
         _mw.set_battle_server(battle_srv, args.battle_port, host_ip=host_ip)
         threading.Thread(target=battle_srv.run, daemon=True).start()
-        log(f"UDP 动态战斗服监听 0.0.0.0:{args.battle_port}（下发目标 {host_ip}:{args.battle_port}）", module="BATTLE")
+        log(f"UDP 动态战斗服监听 {network.bind_host}:{args.battle_port}（下发目标 {host_ip}:{args.battle_port}）", module="BATTLE")
 
     # 启动 game TCP 服务器（server_net 网络层）
     srv = server_net.start_game_server(
         args.game_port, core, db, _gen, _enc, _dec,
-        replay=replay_mod, material=material, frame_delay=args.frame_delay)
+        replay=replay_mod, material=material, frame_delay=args.frame_delay, bind_host=network.bind_host)
     log(f"game TCP 监听 {args.game_port}", module="NET")
 
     # 启动 gateway TCP 服务器（登录握手）
     gws = server_net.start_gateway_server(
-        args.gw_port, core, db, _gen, _enc, _dec, material=material, host_ip=host_ip)
+        args.gw_port, core, db, _gen, _enc, _dec, material=material, host_ip=host_ip,
+        bind_host=network.bind_host)
     gws.game_port = args.game_port
     gw_thread = threading.Thread(target=gws.serve_forever, daemon=True)
     gw_thread.start()
@@ -486,13 +492,24 @@ def main(argv=None):
 
     # 启动 HTTPS（SDK 层 + HTTP:80 辅助 + 官方 CDN 抓包拦截）
     app = server_net.build_https_app(core, material, args.game_port, args.gw_port, host_ip=host_ip)
+    try:
+        sdk_https, sdk_http = server_net.make_sdk_servers(
+            app, args.https_port, http_port=args.http_port, bind_host=network.bind_host,
+            require_http=args.android_local)
+    except Exception as exc:
+        log(f"SDK 监听失败: {exc}", "ERROR", module="NET")
+        gws.shutdown()
+        gws.server_close()
+        srv.server_close()
+        return 1
     import runtime_scheduler
     scheduler = runtime_scheduler.start(db)
     log('周期与等级邮件后台检查已启动，每 30 秒检查并重试未完成投递', module='MAIN')
-    https_thread = threading.Thread(
-        target=server_net.start_https, args=(app, args.https_port), daemon=True)
+    if sdk_http is not None:
+        threading.Thread(target=sdk_http.serve_forever, daemon=True).start()
+    https_thread = threading.Thread(target=sdk_https.serve_forever, daemon=True)
     https_thread.start()
-    log(f"HTTPS(SDK) 监听 {args.https_port} (HTTP:80 直传已挂载)", module="NET")
+    log(f"HTTPS(SDK) 监听 {network.bind_host}:{args.https_port}; HTTP:{args.http_port}", module="NET")
 
     curr_ver = res_version_manager.get_current_version()
     curr_cfg = res_version_manager.get_version_config(curr_ver)
@@ -500,18 +517,21 @@ def main(argv=None):
 
     print("=" * 64, flush=True)
     print(f"  [*] 深空之眼单机服务核心已启动：", flush=True)
-    print(f"  - 宿主机局域网 IP : {host_ip}", flush=True)
+    print(f"  - 客户端下发 IP   : {host_ip}", flush=True)
+    print(f"  - 本机监听地址   : {network.bind_host}", flush=True)
     print(f"  - 客户端分发版本   : {curr_ver} ({curr_cfg['display_name']})", flush=True)
     if client_info.get("detected"):
         print(f"  - 客户端资源对齐   : [已对齐] 命中客户端 Build {client_info['version']} ({client_info['matched_file']})", flush=True)
     else:
         print(f"  - 客户端资源对齐   : [未对齐/兜底] {client_info.get('detail')}", flush=True)
-    print(f"  - 根证书安装地址   : http://{host_ip}/cert", flush=True)
+    http_origin = f"http://{host_ip}" + (f":{args.http_port}" if args.http_port != 80 else "")
+    print(f"  - 根证书安装地址   : {http_origin}/cert" if args.http_port else "  - 辅助 HTTP 已禁用", flush=True)
     print(f"  - PC 端资源落盘目录 : {cdn_proxy.get_data_dir('pc')}", flush=True)
     print(f"  - iOS 端资源落盘目录: {cdn_proxy.get_data_dir('ios')}", flush=True)
     print(f"  - 官方资源智能抓包 : {'[已开启] (双向流式转发 + 物理分盘落库)' if cdn_proxy.is_capture_enabled() else '[已关闭] (纯本地缓存)'}", flush=True)
-    print(f"  - GM 运维控制台    : http://{host_ip}/web/gm_console.html", flush=True)
-    print(f"  - 客户端关于与排障 : http://{host_ip}/web/agreement.html", flush=True)
+    if args.http_port:
+        print(f"  - GM 运维控制台    : {http_origin}/web/gm_console.html", flush=True)
+        print(f"  - 客户端关于与排障 : {http_origin}/web/agreement.html", flush=True)
     print("=" * 64, flush=True)
 
     while True:
@@ -520,7 +540,7 @@ def main(argv=None):
         except KeyboardInterrupt:
             log("正常退出 (KeyboardInterrupt)", module="MAIN")
             break
-        except BaseException as e:
+        except Exception as e:
             log(f"game TCP 捕获异常: {e}，保持持续运行...", "WARN", module="MAIN")
             time.sleep(1)
     return 0

@@ -41,7 +41,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
-/** DNS-only split route, scoped to the game UID. All game transport stays direct. */
+/** Game-only DNS split route, with an optional local SDK TCP route. */
 public final class ConnectionService extends VpnService {
     public static final String GAME = "com.yongshi.tenojo.ys";
     public static final String START = "io.github.qiuyuxc.agconnect.START";
@@ -60,6 +60,9 @@ public final class ConnectionService extends VpnService {
     public static volatile Status status = new Status(false, "未连接", "准备完成后，填写服务器地址并开启连接。");
     public static final AtomicLong redirected = new AtomicLong();
     public static final AtomicLong dnsFailures = new AtomicLong();
+    public static final AtomicLong localConnections = new AtomicLong();
+    public static final AtomicLong localFailures = new AtomicLong();
+    public static volatile String lastLocalFailure = "";
     private final Handler main = new Handler(Looper.getMainLooper());
     private ConnectivityManager connectivity;
     private boolean watching;
@@ -93,23 +96,27 @@ public final class ConnectionService extends VpnService {
             closeRunner();
             if (VpnService.prepare(this) != null)
                 throw new IllegalStateException("请打开助手并允许系统 VPN 连接请求。");
-            ServerAddress address = ServerAddress.parse(intent.getStringExtra("server"));
+            boolean local = intent.getBooleanExtra("local", false);
+            ServerAddress address = local ? ServerAddress.local() : ServerAddress.parse(intent.getStringExtra("server"));
             getPackageManager().getApplicationInfo(GAME, 0);
             PhysicalNetwork physical = selectNetwork();
-            if (physical == null)
+            if (physical == null && !local)
                 throw new IllegalStateException("当前没有可用网络。请连接 Wi-Fi 或移动网络后重试。");
-            requireCompatibleDns(physical);
-            Builder builder = new Builder().setSession("深空进服 · " + address.host)
+            if (physical != null) requireCompatibleDns(physical);
+            Builder builder = new Builder().setSession(local ? "深空进服 · 手机本地" : "深空进服 · " + address.host)
                     .setMtu(1500).addAddress(Ipv4Packet.INTERFACE_ADDRESS, 32)
                     .addDnsServer(Ipv4Packet.DNS_ADDRESS).addRoute(Ipv4Packet.DNS_ADDRESS, 32)
                     .allowFamily(OsConstants.AF_INET6).setBlocking(false)
-                    .setConfigureIntent(openApp()).setUnderlyingNetworks(new Network[]{physical.network});
+                    .setConfigureIntent(openApp()).setUnderlyingNetworks(physical == null
+                            ? new Network[0] : new Network[]{physical.network});
+            if (local) builder.addRoute(LocalServerConfig.ADDRESS, 32);
             builder.addAllowedApplication(GAME);
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false);
             ParcelFileDescriptor descriptor = builder.establish();
             if (descriptor == null) throw new IllegalStateException("系统未授予 VPN 权限，请重新开启连接。");
-            redirected.set(0); dnsFailures.set(0);
-            runner = new TunnelRunner(descriptor, address, physical);
+            redirected.set(0); dnsFailures.set(0); localConnections.set(0); localFailures.set(0);
+            lastLocalFailure = "";
+            runner = new TunnelRunner(descriptor, address, physical, local);
             runner.start();
             if (!watching) {
                 connectivity.registerNetworkCallback(new NetworkRequest.Builder()
@@ -117,9 +124,12 @@ public final class ConnectionService extends VpnService {
                         .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(), callback);
                 watching = true;
             }
-            connected(address);
+            connected(address, local);
         } catch (android.content.pm.PackageManager.NameNotFoundException error) {
             stopConnection("无法开启", "未找到深空之眼。请先安装兼容的用户 CA 版客户端。");
+        } catch (LinkageError error) {
+            Log.e(TAG, "Local TCP library unavailable", error);
+            stopConnection("无法开启本地模式", "本地转发组件无法加载，请安装支持当前手机架构的助手版本。");
         } catch (Exception error) {
             Log.e(TAG, "VPN setup failed", error);
             stopConnection("无法开启", error instanceof IllegalArgumentException || error instanceof IllegalStateException
@@ -128,9 +138,11 @@ public final class ConnectionService extends VpnService {
         return START_NOT_STICKY;
     }
 
-    private void connected(ServerAddress address) {
-        status = new Status(true, "连接已开启", "服务器 " + address.host + "\n请完全退出游戏后重新打开；实际登录结果以游戏为准。");
-        foreground("连接已开启 · " + address.host);
+    private void connected(ServerAddress address, boolean local) {
+        status = new Status(true, "连接已开启", (local
+                ? "本机转发已开启。请保持 Termux 服务端运行。"
+                : "服务器 " + address.host) + "\n请完全退出游戏后重新打开；实际登录结果以游戏为准。");
+        foreground(local ? "连接已开启 · 手机本地" : "连接已开启 · " + address.host);
     }
 
     private PendingIntent openApp() {
@@ -206,10 +218,13 @@ public final class ConnectionService extends VpnService {
             runner.physical = next;
             runner.closeSockets();
             setUnderlyingNetworks(next == null ? new Network[0] : new Network[]{next.network});
-            if (next == null) {
+            if (next == null && runner.local) {
+                status = new Status(true, "连接已开启", "本机转发继续运行；资源下载需等待网络恢复。\n请保持 Termux 服务端运行。");
+                foreground("手机本地 · 等待资源下载网络");
+            } else if (next == null) {
                 status = new Status(true, "等待网络", "网络已断开，恢复后会继续连接。");
                 foreground("等待 Wi-Fi 或移动网络恢复");
-            } else connected(runner.address);
+            } else connected(runner.address, runner.local);
         } catch (Exception error) {
             stopConnection("连接已停止", error.getMessage());
         }
@@ -251,6 +266,7 @@ public final class ConnectionService extends VpnService {
     private final class TunnelRunner implements Closeable {
         final ParcelFileDescriptor descriptor;
         final ServerAddress address;
+        final boolean local;
         final DnsTunnel tunnel;
         final ThreadPoolExecutor workers = new ThreadPoolExecutor(4, 4, 0, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(64), new ThreadPoolExecutor.AbortPolicy());
@@ -258,13 +274,28 @@ public final class ConnectionService extends VpnService {
         final Object writes = new Object();
         volatile PhysicalNetwork physical;
         volatile boolean closed;
+        LocalForwarder forwarder;
+        NativeTunnel tcp;
 
-        TunnelRunner(ParcelFileDescriptor descriptor, ServerAddress address, PhysicalNetwork physical) {
+        TunnelRunner(ParcelFileDescriptor descriptor, ServerAddress address, PhysicalNetwork physical, boolean local) {
             this.descriptor = descriptor; this.address = address; this.physical = physical;
+            this.local = local;
             tunnel = new DnsTunnel(this::resolve, this::send);
         }
 
-        void start() { new Thread(this::read, "game-dns-tun").start(); }
+        void start() throws IOException {
+            if (local) {
+                forwarder = new LocalForwarder(LocalServerConfig.HTTPS_PORT, LocalServerConfig.HTTP_PORT, () -> {
+                    // Loopback sockets must not be bound to a physical network.
+                    return TcpSockets.open(ConnectionService.this::protect);
+                }, localConnections, localFailures, error -> {
+                    lastLocalFailure = error.getMessage();
+                    Log.w(TAG, "Local SDK connection failed", error);
+                });
+                tcp = new NativeTunnel(forwarder.port(), this::send, this::fail);
+            }
+            new Thread(this::read, "game-dns-tun").start();
+        }
 
         private void fail(Exception error) {
             if (closed) return;
@@ -288,7 +319,9 @@ public final class ConnectionService extends VpnService {
                         try {
                             int size = Os.read(poll.fd, buffer, 0, buffer.length);
                             if (size <= 0) throw new IOException("TUN EOF");
-                            tunnel.accept(Arrays.copyOf(buffer, size), SystemClock.elapsedRealtime());
+                            byte[] packet = Arrays.copyOf(buffer, size);
+                            if (local && LocalServerConfig.acceptsPacket(packet)) tcp.send(packet);
+                            else tunnel.accept(packet, SystemClock.elapsedRealtime());
                         } catch (ErrnoException error) {
                             if (error.errno != OsConstants.EAGAIN && error.errno != OsConstants.EINTR) throw error;
                         }
@@ -349,10 +382,9 @@ public final class ConnectionService extends VpnService {
                     } catch (IOException | RuntimeException error) { release(socket); throw error; }
                 }
                 public Socket tcp() throws IOException {
-                    Socket socket = new Socket();
+                    Socket socket = TcpSockets.open(ConnectionService.this::protect);
                     try {
                         track(socket);
-                        if (!protect(socket)) throw new IOException("VPN socket protection failed");
                         current.network.bindSocket(socket);
                         return socket;
                     } catch (IOException | RuntimeException error) { release(socket); throw error; }
@@ -376,6 +408,8 @@ public final class ConnectionService extends VpnService {
             tunnel.close();
             workers.shutdownNow();
             closeSockets();
+            if (forwarder != null) forwarder.close();
+            if (tcp != null) tcp.close();
             synchronized (writes) {
                 try { descriptor.close(); } catch (IOException ignored) { }
             }

@@ -204,12 +204,14 @@ def _is_public_ipv4(value):
 
 
 def set_source_ip(value):
-    """使用 main 已确认的 LAN 地址，不更改系统路由或代理。"""
-    address = ipaddress.IPv4Address(value)
-    if address.is_unspecified or address.is_loopback or address in ipaddress.IPv4Network("198.18.0.0/15"):
-        raise ValueError("CDN 出站地址必须是本机真实 LAN 地址")
+    """使用独立的真实网络地址；None 表示按实际网络自动检测。"""
+    address = ipaddress.IPv4Address(value) if value is not None else None
+    if address is not None and (address.is_unspecified or address.is_loopback or address.is_multicast
+            or int(address) == 0xFFFFFFFF or address in ipaddress.IPv4Network("198.18.0.0/15")
+            or address in ipaddress.IPv4Network("10.111.0.0/24")):
+        raise ValueError("CDN 出站地址必须是本机真实网络 IPv4")
     global _SOURCE_IP
-    _SOURCE_IP = str(address)
+    _SOURCE_IP = str(address) if address is not None else None
     with _DNS_LOCK:
         _DNS_CACHE.clear()
 
