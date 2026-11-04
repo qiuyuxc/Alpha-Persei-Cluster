@@ -12,6 +12,12 @@ COMMANDS = {27010, 27012, 27014, 27020, 27030, 27500, 27400, 27402,
             *range(31002, 31036, 2), 33000, 33002, 33004, 33006, 33008, 33010}
 
 
+class GuildRewardError(ValueError):
+    def __init__(self, message, result):
+        super().__init__(message)
+        self.result = result
+
+
 def frame(cmd, data):
     payload = encode('sc_' + str(cmd), data)
     if payload is None:
@@ -114,19 +120,21 @@ def _claim_reward(db, ctx, uid, data, now):
         reward = social.CATALOG['prepose']['1']['personal_reward']
     else:
         if guild_cycle.phase(now) != 'challenge':
-            raise ValueError('裂隙开放阶段才能领取首领奖励')
+            raise GuildRewardError('裂隙开放阶段才能领取首领奖励', 6045)
         info = social.boss_info(db, uid, gid, now)['info']
         difficulty = info['difficulty']
         cfg = social.CATALOG['bosses'][str(difficulty)]
         options = cfg['personal_reward'] if kind == 1 else cfg['reward']
         reward = next((r[1] for r in options if r[0] == award), None)
         score = info['personal_score'] if kind == 1 else info['collective_damage_award']
-        if not reward or score < award:
-            raise ValueError('尚未达到奖励条件')
+        if not reward:
+            raise GuildRewardError('奖励档位不存在', 6026)
+        if score < award:
+            raise GuildRewardError('尚未达到奖励条件', 2005)
         week = social.get_weekly_mon_5am_ts(now)
         key = (uid, week, difficulty, kind, award)
         if db.query('SELECT 1 FROM social_reward_claims WHERE uid=? AND week_id=? AND difficulty=? AND kind=? AND award_id=?', key):
-            raise ValueError('奖励已领取')
+            raise GuildRewardError('奖励已领取', 6027)
     from inventory_service import InventoryService
     import gm_actions
     for item, count in reward:
@@ -386,7 +394,8 @@ def dispatch(req, ctx):
     except ValueError as error:
         restore_notifications(ctx, checkpoint)
         ctx.log('社交请求被拒绝: ' + str(error), 'WARN')
-        response = CSResponse([frame(ack, {'result': 1})])
+        result = error.result if isinstance(error, GuildRewardError) else 1
+        response = CSResponse([frame(ack, {'result': result})])
         return req.prepare_response(response, failure=True) if req.prepare_response else response
     except Exception:
         restore_notifications(ctx, checkpoint)

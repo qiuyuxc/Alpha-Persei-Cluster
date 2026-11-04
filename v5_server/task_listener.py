@@ -216,14 +216,9 @@ def _push_task_diff(ctx, uid, changed_list):
 def _push_accumulate_sign_diff(ctx, uid, login_days, version=2):
     """时迹馈赠全量状态 sc_17027 下行帧推送"""
     try:
-        awards = ctx.db.query("SELECT award_id FROM accumulate_sign_award WHERE uid = ?", (uid,))
-        award_ids = [int(x["award_id"]) for x in awards]
-        payload = encode("sc_17027", {
-            "version": int(version or 2),
-            "open_sign": True,
-            "login_days": int(login_days),
-            "award_ids": award_ids
-        })
+        from accumulate_sign_status import payload as sign_status
+        data = sign_status(ctx.db, uid)
+        payload = encode('sc_17027', data) if data else None
         if payload:
             frame = DownFrame(17027, payload)
             if hasattr(ctx, "append_frame"):
@@ -499,15 +494,17 @@ def on_user_login(ctx, uid, is_first_login=True, now_ts=None, **kwargs):
         if acc:
             new_days = int(acc.get("login_days") or 0) + 1
             ver = int(acc.get("version") or 2)
+            from accumulate_sign_status import milestone_reached
+            should_open = int(milestone_reached(ver, new_days))
             changed = ctx.db.execute(
-                "UPDATE accumulate_sign SET login_days = ?, open_sign = 1, update_ts = ? WHERE uid = ?",
-                (new_days, now_ts, uid)
+                "UPDATE accumulate_sign SET login_days = ?, open_sign = ?, update_ts = ? WHERE uid = ?",
+                (new_days, should_open, now_ts, uid)
             )
         else:
             new_days = 1
             ver = 2
             changed = ctx.db.execute(
-                "INSERT INTO accumulate_sign (uid, version, open_sign, login_days, update_ts) VALUES (?, ?, 1, 1, ?)",
+                "INSERT INTO accumulate_sign (uid, version, open_sign, login_days, update_ts) VALUES (?, ?, 0, 1, ?)",
                 (uid, ver, now_ts)
             )
         if changed.rowcount != 1:

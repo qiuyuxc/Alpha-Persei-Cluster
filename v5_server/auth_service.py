@@ -64,7 +64,8 @@ class AuthService:
                 password_hash TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0,
                 disabled INTEGER NOT NULL DEFAULT 0, token_version INTEGER NOT NULL DEFAULT 1,
                 fresh_profile INTEGER NOT NULL DEFAULT 1, tutorial_mode TEXT NOT NULL DEFAULT 'full',
-                created_at INTEGER NOT NULL, last_login_at INTEGER NOT NULL DEFAULT 0)""",
+                created_at INTEGER NOT NULL, last_login_at INTEGER NOT NULL DEFAULT 0,
+                password_change_required INTEGER NOT NULL DEFAULT 0)""",
             """CREATE TABLE IF NOT EXISTS auth_sessions (
                 token_hash TEXT PRIMARY KEY, uid INTEGER NOT NULL, kind TEXT NOT NULL,
                 expires_at INTEGER NOT NULL, token_version INTEGER NOT NULL)""",
@@ -74,6 +75,9 @@ class AuthService:
                 uid INTEGER NOT NULL, expires_at INTEGER NOT NULL)""",
         ):
             db.execute(sql)
+        if not any(row['name'] == 'password_change_required'
+                   for row in db.query('PRAGMA table_info(auth_accounts)')):
+            db.execute('ALTER TABLE auth_accounts ADD COLUMN password_change_required INTEGER NOT NULL DEFAULT 0')
         self._dummy_hash = password_hash(secrets.token_urlsafe(24))
 
     @contextmanager
@@ -118,7 +122,8 @@ class AuthService:
 
     @staticmethod
     def public(account):
-        return {k: account[k] for k in ("uid", "username", "is_admin", "disabled", "fresh_profile", "tutorial_mode", "created_at")}
+        return {**{k: account[k] for k in ("uid", "username", "is_admin", "disabled", "fresh_profile", "tutorial_mode", "created_at")},
+                'password_change_required': bool(account.get('password_change_required', 0))}
 
     def create(self, username, password, setup_token=None):
         username = self.username(username)
@@ -161,12 +166,16 @@ class AuthService:
         return rows[0]
 
     def login(self, username, password, kind="web"):
-        # Uniform failure and KDF cost also for unknown names.
+        # Check credentials first; unknown names still pay the same KDF cost.
         rows = self.db.query("SELECT * FROM auth_accounts WHERE username=? COLLATE NOCASE", (str(username)[:128],))
         valid = check_password(password, rows[0]["password_hash"] if rows else self._dummy_hash)
-        if not valid or not rows or rows[0]["disabled"]:
+        if not valid or not rows:
             raise AuthError("账号或密码错误", 401)
+        if rows[0]["disabled"]:
+            raise AuthError("账号已封禁，请联系管理员", 403)
         account = rows[0]
+        if account['password_change_required'] and kind != 'web':
+            raise AuthError('请先用注册码登录子 GM 设置新密码，再登录游戏', 403)
         self.db.execute("UPDATE auth_accounts SET last_login_at=? WHERE uid=?", (int(time.time()), account["uid"]))
         return {**self.public(account), "token": self.issue(account["uid"], kind)}
 
@@ -193,6 +202,8 @@ class AuthService:
         token = secrets.token_urlsafe(32) + "." + str(uid)
         with self.transaction():
             account = self.account(uid)
+            if account['password_change_required'] and kind != 'web':
+                raise AuthError('请先用注册码登录子 GM 设置新密码，再登录游戏', 403)
             self.db.execute("DELETE FROM auth_sessions WHERE expires_at<=?", (int(time.time()),))
             self.db.execute("INSERT INTO auth_sessions VALUES (?,?,?,?,?)",
                             (token_hash(token), uid, kind, int(time.time()) + ttl, account["token_version"]))
@@ -217,7 +228,9 @@ class AuthService:
             account = self.account(uid)
             if not admin and not check_password(old_password, account["password_hash"]):
                 raise AuthError("原密码错误", 401)
-            self.db.execute("UPDATE auth_accounts SET password_hash=?, token_version=token_version+1 WHERE uid=?", (digest, uid))
+            if account['password_change_required'] and check_password(password, account['password_hash']):
+                raise AuthError('新密码须与初始注册码不同')
+            self.db.execute("UPDATE auth_accounts SET password_hash=?, token_version=token_version+1, password_change_required=0 WHERE uid=?", (digest, uid))
             self.db.execute("DELETE FROM auth_sessions WHERE uid=?", (uid,))
 
     def set_disabled(self, uid, disabled):
@@ -229,6 +242,20 @@ class AuthService:
                 raise AuthError("不能停用管理员账号")
             self.db.execute("UPDATE auth_accounts SET disabled=?, token_version=token_version+1 WHERE uid=?", (int(disabled), uid))
             self.db.execute("DELETE FROM auth_sessions WHERE uid=?", (uid,))
+
+    def revoke_game_sessions(self, uid):
+        """Invalidate game/SDK tokens while retaining the target's web sessions."""
+        with self.transaction():
+            rows = self.db.query('SELECT token_version FROM auth_accounts WHERE uid=?', (uid,))
+            if not rows:
+                if not self.db.query('SELECT 1 FROM users WHERE uid=?', (uid,)):
+                    raise AuthError('账号不存在', 404)
+                return 0
+            version = int(rows[0]['token_version']) + 1
+            self.db.execute('UPDATE auth_accounts SET token_version=? WHERE uid=?', (version, uid))
+            self.db.execute("UPDATE auth_sessions SET token_version=? WHERE uid=? AND kind='web'", (version, uid))
+            deleted = self.db.execute("DELETE FROM auth_sessions WHERE uid=? AND kind<>'web'", (uid,))
+            return deleted.rowcount
 
     def connection_valid(self, uid, version):
         return bool(self.db.query("SELECT 1 FROM auth_accounts WHERE uid=? AND token_version=? AND disabled=0", (uid, version)))

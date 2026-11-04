@@ -757,7 +757,7 @@ class GMReader:
             "gw_port": ctx.get("gw_port", 8102),
             "host_ip": ctx.get("host_ip", "127.0.0.1"),
             "default_uid": ctx.get("default_uid", 2174928301),
-            "online_users": 1,
+            "online_users": len(__import__('server_net').get_online_uids()),
             "total_users": user_count,
             "capture_enabled": ctx.get("capture_enabled", False),
             "version": "v5.2.1-sandbox",
@@ -867,9 +867,9 @@ class GMReader:
             full_recovery_str = f"{hrs}小时{mins:02d}分" if hrs > 0 else f"{mins}分钟"
 
         # 7. 在线状态与设备类型
-        w_row = self.query_one("SELECT is_online FROM user_timer_watermark WHERE uid = ?", (uid,)) or {}
-        is_online = bool(w_row.get("is_online", 0))
-        client_device = "Windows 在线" if is_online else "离线"
+        presence = __import__('server_net').game_presence().get(int(uid), {})
+        is_online = bool(presence.get('online'))
+        client_device = '游戏在线' if presence.get('ready') else ('登录中' if is_online else '离线')
 
         # 8. 贴纸画册与个性化贴纸墙 (Sticker Wall)
         stickers_catalog = {}

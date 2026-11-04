@@ -107,6 +107,8 @@ def initialize(db, now_ts=None):
         guild_cycle.initialize(db, now_ts)
         import guild_prepose
         guild_prepose.initialize(db)
+        import guild_boss
+        guild_boss.initialize(db)
         import guild_contributions
         guild_contributions.initialize(db, now_ts)
         return json.loads(found[0]['value'])
@@ -118,6 +120,8 @@ def initialize(db, now_ts=None):
             guild_cycle.initialize(db, now)
             import guild_prepose
             guild_prepose.initialize(db)
+            import guild_boss
+            guild_boss.initialize(db)
             import guild_contributions
             guild_contributions.initialize(db, now)
             return json.loads(found[0]['value'])
@@ -157,6 +161,8 @@ def initialize(db, now_ts=None):
         guild_cycle.initialize(db, now)
         import guild_prepose
         guild_prepose.initialize(db)
+        import guild_boss
+        guild_boss.initialize(db)
         import guild_contributions
         guild_contributions.initialize(db, now)
     return dict(DEFAULTS)
@@ -444,8 +450,10 @@ def join_guild(db, uid, guild_id, now, approved=False):
 
 def leave_guild(db, uid, guild_id):
     import guild_prepose
+    import guild_boss
     member = require_member(db, uid, guild_id)
     guild_prepose.cancel(db, uid, guild_id)
+    guild_boss.cancel(db, uid, guild_id)
     db.execute('DELETE FROM social_members WHERE guild_id=? AND uid=? AND is_bot=0', (guild_id, uid))
     db.execute('UPDATE users SET club_id=0,club_post=0 WHERE uid=?', (uid,))
     successor = []

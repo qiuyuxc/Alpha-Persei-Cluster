@@ -16,6 +16,8 @@ import OverviewPanel from '../panels/Overview'
 import SettingsPanel from '../panels/Settings'
 import AIChatPanel from '../panels/AIChat'
 import SocialPanel from '../panels/Social'
+import SelfWorkspace from './SelfWorkspace'
+import PasswordChangeForm from './PasswordChangeForm'
 
 const PANELS = [
   { id: 'accounts', title: '账号数据', description: '档案、头像与账号管理', icon: Users, Panel: AccountsPanel },
@@ -117,7 +119,6 @@ function SubSession() {
     if (getAuthToken()) apiRequest<LoginAccount>('/api/auth/me')
       .then(r => {
         if (!active) return
-        if (!r.data.is_admin) { setAuthToken(''); setMessage('此页面仅供管理员使用。'); return }
         setAccount(r.data)
       }).catch(e => { if (active) setMessage(e.message) })
       .finally(() => { if (active) setLoading(false) })
@@ -132,10 +133,6 @@ function SubSession() {
         method: 'POST', body: JSON.stringify({ username, password }),
       })
       setPassword(''); setAuthToken(r.data.token)
-      if (!r.data.is_admin) {
-        try { await apiRequest('/api/auth/logout', { method: 'POST' }) } finally { setAuthToken('') }
-        throw new Error('此账号没有管理员权限，请使用管理员账号登录。')
-      }
       setAccount(r.data)
     } catch (e) { setMessage((e as Error).message) }
     finally { setBusy(false) }
@@ -148,14 +145,31 @@ function SubSession() {
     finally { setAuthToken(''); setAccount(null); setPassword(''); setMessage('已退出登录。'); setBusy(false) }
   }
 
+  function passwordChanged() {
+    if (account) setUsername(account.username)
+    setAuthToken(''); setAccount(null); setPassword('')
+    setMessage('密码已修改。请使用新密码重新登录网页和游戏。')
+  }
+
   if (loading) return <p role="status" className="sub-message">正在验证登录…</p>
-  if (account) return <ServerProvider><Workspace account={account} logout={() => { if (!busy) void logout() }} /></ServerProvider>
+  if (account?.password_change_required) return <main className="sub-login">
+    <section>
+      <span className="sub-mark">GM</span><h1>设置新密码</h1>
+      <p>游戏账号 {account.username}</p>
+      <PasswordChangeForm required changed={passwordChanged} />
+      <button className="sub-text-button" disabled={busy} onClick={() => { void logout() }}>退出登录</button>
+    </section>
+  </main>
+  if (account) return account.is_admin
+    ? <ServerProvider><Workspace account={account} logout={() => { if (!busy) void logout() }} /></ServerProvider>
+    : <SelfWorkspace account={account} logout={() => { if (!busy) void logout() }} passwordChanged={passwordChanged} />
   return <main className="sub-login">
     <section>
       <span className="sub-mark">GM</span><h1>子 GM</h1>
-      <p>登录管理员账号，在游戏内管理存档。</p>
+      <p>登录游戏账号，按当前游戏等级使用奖励与培养功能。</p>
+      <p className="sub-intro">首次通过游戏验证码入口注册时，用 8 位本地注册码作为初始密码登录。</p>
       <form onSubmit={submit}>
-        <label>管理员账号<input autoComplete="username" inputMode="numeric" pattern="[0-9]{6,16}" minLength={6} maxLength={16} value={username} onChange={e => setUsername(e.target.value)} required /></label>
+        <label>游戏账号<input autoComplete="username" inputMode="numeric" pattern="[0-9]{6,16}" minLength={6} maxLength={16} value={username} onChange={e => setUsername(e.target.value)} required /></label>
         <label>密码<input type="password" autoComplete="current-password" minLength={8} maxLength={64} value={password} onChange={e => setPassword(e.target.value)} required /></label>
         <button className="sub-primary" disabled={busy}>{busy ? '登录中…' : '登录'}</button>
       </form>

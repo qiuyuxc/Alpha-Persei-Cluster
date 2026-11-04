@@ -271,6 +271,46 @@ def _options_preflight(_subpath):
 # 1. 状态总览 (/overview)
 # ===========================================================================
 
+@gm_bp.get('/shop/restock/status')
+def get_shop_restock_status():
+    import shop_restock
+    db = get_db()
+    if db is None:
+        return err(GMErrorCode.DB_NOT_READY, '数据库连接未就绪')
+    try:
+        return ok(shop_restock.get_status(db))
+    except Exception as error:
+        return err(GMErrorCode.SERVICE_ERROR, str(error))
+
+
+@gm_bp.post('/shop/restock/settings')
+def post_shop_restock_settings():
+    import shop_restock
+    import runtime_scheduler
+    db = get_db()
+    if db is None:
+        return err(GMErrorCode.DB_NOT_READY, '数据库连接未就绪')
+    try:
+        result = shop_restock.save_settings(db, request.get_json(silent=True))
+        runtime_scheduler.wake()
+        return ok(result)
+    except ValueError as error:
+        return err(GMErrorCode.PARAM_INVALID, str(error))
+
+
+@gm_bp.post('/shop/restock/run')
+def post_shop_restock_run():
+    import shop_restock
+    db = get_db()
+    if db is None:
+        return err(GMErrorCode.DB_NOT_READY, '数据库连接未就绪')
+    try:
+        result = shop_restock.apply_due(db, force=True)
+        shop_restock.notify(db, result)
+        return ok({**result, **shop_restock.get_status(db)}, msg='商店已补货')
+    except Exception as error:
+        return err(GMErrorCode.SERVICE_ERROR, str(error))
+
 @gm_bp.route("/overview/status", methods=["GET"])
 @gm_bp.route("/status", methods=["GET"])  # 兼容旧路径
 def get_overview_status():
@@ -1998,8 +2038,24 @@ def get_shop_goods():
         shop_id = 2
 
     try:
+        db = get_db()
+        if db is not None:
+            import shop_restock
+            shop_restock.apply_due(db)
         reader = get_reader()
         data = reader.get_shop_goods_view(uid, shop_id=shop_id)
+        if db is not None:
+            now = int(time.time())
+            packed = {'changed_shop_info': {'shop_id': shop_id, 'goods_list': [
+                {'goods_id': item['goods_id']} for item in data['goods']]}}
+            normalized = shop_restock.normalize_payload(db, packed, now, uid)['changed_shop_info']['goods_list']
+            by_id = {item['goods_id']: item for item in normalized}
+            for item in data['goods']:
+                item['buy_times'] = by_id[item['goods_id']]['buy_times']
+                item['next_refresh_ts'] = by_id[item['goods_id']]['next_refresh_timestamp']
+                limit = int(item['limit_num'] or 0)
+                item['left_num'] = max(0, limit - item['buy_times']) if limit > 0 else -1
+                item['is_sold_out'] = limit > 0 and item['buy_times'] >= limit
         return ok(data)
     except Exception as e:
         return err(GMErrorCode.SERVICE_ERROR, f"获取商店商品失败: {e}")
@@ -2014,8 +2070,21 @@ def get_shop_stats():
         return err(GMErrorCode.PARAM_INVALID, err_msg)
 
     try:
+        db = get_db()
+        if db is not None:
+            import shop_restock
+            shop_restock.apply_due(db)
         reader = get_reader()
         data = reader.get_shop_stats_view(uid)
+        if db is not None:
+            now = int(time.time())
+            cfg, saved = shop_restock.get_settings(db, now), shop_restock.state(db)
+            rows = db.query('''SELECT p.shop_id,p.buy_times,p.next_refresh_timestamp,g.limit_num,g.refresh_cycle
+                               FROM store_purchase p JOIN shop_goods g ON g.goods_id=p.goods_id
+                               WHERE p.uid=? AND g.limit_num>0''', (uid,))
+            data['sold_out_goods_count'] = sum(shop_restock.normalize(cfg, saved, int(row['shop_id']),
+                int(row['refresh_cycle'] or 0), row['buy_times'], row['next_refresh_timestamp'], now)[0]
+                >= int(row['limit_num']) for row in rows)
         return ok(data)
     except Exception as e:
         return err(GMErrorCode.SERVICE_ERROR, f"获取商店统计失败: {e}")

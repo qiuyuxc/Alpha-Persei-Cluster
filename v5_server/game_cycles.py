@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import secrets
 import time
 
 from lazy_timer import get_daily_5am_ts, get_weekly_mon_5am_ts
@@ -43,7 +44,9 @@ def _defaults(db, now):
     return {'battlepass': {'duration_days': 42, 'anchor_ts': get_daily_5am_ts(now), 'next_duration_days': None},
             'polyhedron': {'duration_days': 7, 'anchor_ts': get_weekly_mon_5am_ts(now), 'next_duration_days': None},
             'rotation': {'enabled': len(steps) > 1, 'duration_days': 7, 'start_ts': get_daily_5am_ts(now),
-                         'fixed_pool_ids': fixed, 'steps': steps, 'updated_at': now}}
+                         'fixed_pool_ids': fixed, 'steps': steps, 'mode': 'sequence',
+                         'random_group_count': 1, 'random_pool_ids': [],
+                         'random_seed': secrets.token_hex(16), 'updated_at': now}}
 
 
 CYCLES = ('battlepass', 'polyhedron')
@@ -59,9 +62,17 @@ def _window(settings, name, now):
 
 def _backfill(db, settings, now):
     """线上旧存档只有 battlepass/rotation 两项，补写多维变量默认周期后落盘。"""
+    changed = False
     if 'polyhedron' not in settings:
         settings['polyhedron'] = {'duration_days': 7, 'anchor_ts': get_weekly_mon_5am_ts(now),
                                   'next_duration_days': None}
+        changed = True
+    for key, value in {'mode': 'sequence', 'random_group_count': 1,
+                       'random_pool_ids': [], 'random_seed': secrets.token_hex(16)}.items():
+        if key not in settings['rotation']:
+            settings['rotation'][key] = value
+            changed = True
+    if changed:
         db.execute('UPDATE server_global_config SET value=? WHERE key=?',
                    (json.dumps(settings, ensure_ascii=False), KEY))
     return settings
@@ -132,13 +143,17 @@ def save_settings(db, patch, now_ts=None):
             settings[name]['next_duration_days'] = days if days != settings[name]['duration_days'] else None
         if 'rotation' in patch:
             incoming = patch['rotation']
-            allowed = {'enabled', 'duration_days', 'start_ts', 'fixed_pool_ids', 'steps'}
+            allowed = {'enabled', 'duration_days', 'start_ts', 'fixed_pool_ids', 'steps',
+                       'mode', 'random_group_count', 'random_pool_ids'}
             if not isinstance(incoming, dict) or set(incoming) - allowed:
                 raise ValueError('卡池轮换配置格式无效')
             rotation = {k: copy.deepcopy(settings['rotation'][k]) for k in allowed}
             rotation.update(incoming)
             if not isinstance(rotation['enabled'], bool):
                 raise ValueError('轮换启用状态必须是布尔值')
+            if rotation['mode'] not in ('sequence', 'random'):
+                raise ValueError('轮换模式须为顺序或随机')
+            rotation['random_group_count'] = integer(rotation['random_group_count'], '随机卡池组数', 1, 10)
             rotation['duration_days'] = integer(rotation['duration_days'], '轮换间隔', 1, 365)
             rotation['start_ts'] = integer(rotation['start_ts'], '轮换起始时间', 1)
             available = {int(r['pool_id']) for r in db.query('SELECT pool_id FROM draw_pool')}
@@ -158,10 +173,14 @@ def save_settings(db, patch, now_ts=None):
                     raise ValueError('卡池清单含重复或不存在的卡池')
                 return ids
             rotation['fixed_pool_ids'] = pools(rotation['fixed_pool_ids'])
-            if not isinstance(rotation['steps'], list) or not 1 <= len(rotation['steps']) <= 30:
+            rotation['random_pool_ids'] = pools(rotation['random_pool_ids'])
+            if set(rotation['random_pool_ids']) & set(rotation['fixed_pool_ids']):
+                raise ValueError('随机候选不能包含常驻卡池')
+            validate_steps = rotation['mode'] == 'sequence' or 'steps' in incoming
+            if validate_steps and (not isinstance(rotation['steps'], list) or not 1 <= len(rotation['steps']) <= 30):
                 raise ValueError('轮换顺序须包含 1 至 30 组')
-            steps = []
-            for step in rotation['steps']:
+            steps = [] if validate_steps else rotation['steps']
+            for step in rotation['steps'] if validate_steps else []:
                 if not isinstance(step, dict) or set(step) != {'name', 'pool_ids'}:
                     raise ValueError('每组轮换须填写名称和卡池')
                 name = str(step['name']).strip()
@@ -173,7 +192,10 @@ def save_settings(db, patch, now_ts=None):
                 if not ids and not rotation['fixed_pool_ids']:
                     raise ValueError('每组至少需要一个卡池')
                 steps.append({'name': name, 'pool_ids': ids})
-            rotation.update(steps=steps, updated_at=now)
+            rotation.update(steps=steps, updated_at=now,
+                            random_seed=settings['rotation']['random_seed'])
+            if rotation['mode'] == 'random' and not random_rotation_groups(db, rotation):
+                raise ValueError('当前版本没有可用的随机卡池候选')
             settings['rotation'] = rotation
         db.execute('UPDATE server_global_config SET value=? WHERE key=?', (json.dumps(settings, ensure_ascii=False), KEY))
     return settings
@@ -281,6 +303,30 @@ def sync_tasks(db, uid, now_ts=None):
     return {**changes, 'battlepass': db.query('SELECT * FROM battlepass WHERE uid=?', (uid,))[0]}
 
 
+def random_rotation_groups(db, cfg):
+    """Group native 70/90 pools for the same banner; omit selectable pools."""
+    from draw_service import DrawService
+    import res_version_manager
+    mapping = DrawService.get_instance(db).load_pool_activity_cfg()
+    fixed = set(cfg['fixed_pool_ids'])
+    chosen = set(cfg.get('random_pool_ids') or [])
+    legacy = str(res_version_manager.get_current_version()) == '229'
+    groups = {}
+    for row in db.query('SELECT pool_id,name FROM draw_pool ORDER BY pool_id'):
+        pid = int(row['pool_id'])
+        entry = mapping.get(str(pid)) or {}
+        if (pid in fixed or not entry or entry.get('template') != 3
+                or pid in (10000, 10001, 10002, 4080101, 5000303, 5030301, 5030601)
+                or '自选' in str(row['name']) or '自选' in str(entry.get('name', ''))
+                or chosen and pid not in chosen
+                or legacy and (str(pid).startswith('503') or int(entry.get('theme', 0)) >= 44)):
+            continue
+        key = str(pid // 1000) + ':' + str(pid % 100)
+        group = groups.setdefault(key, {'key': key, 'name': row['name'], 'pool_ids': []})
+        group['pool_ids'].append(pid)
+    return list(groups.values())
+
+
 def rotation_status(db, now_ts=None):
     now = int(time.time()) if now_ts is None else int(now_ts)
     cfg = get_settings(db, now)['rotation']
@@ -291,12 +337,37 @@ def rotation_status(db, now_ts=None):
     state = json.loads(recorded[0]['value']) if recorded else {}
     if state.get('signature') == signature:
         index = max(index, int(state.get('cycle_index', 0)))
-    step_index = index % len(cfg['steps'])
-    step = cfg['steps'][step_index]
-    desired = list(dict.fromkeys(cfg['fixed_pool_ids'] + step['pool_ids']))
+    group_keys = []
+    if cfg['mode'] == 'random':
+        groups = random_rotation_groups(db, cfg)
+        if not groups:
+            raise ValueError('当前版本没有可用的随机卡池候选')
+        groups.sort(key=lambda group: hashlib.sha256(
+            f"{cfg['random_seed']}:{signature}:{index}:{group['key']}".encode()).digest())
+        count = min(cfg['random_group_count'], len(groups))
+        keys = {g['key'] for g in groups}
+        if (state.get('signature') == signature and state.get('cycle_index') == index
+                and len(state.get('random_group_keys', [])) == count
+                and set(state['random_group_keys']) <= keys):
+            by_key = {g['key']: g for g in groups}
+            picked = [by_key[key] for key in state['random_group_keys']]
+        else:
+            picked = groups[:count]
+            if (count < len(groups) and state.get('signature') == signature
+                    and set(state.get('random_group_keys', [])) == {g['key'] for g in picked}):
+                picked = groups[1:count + 1]
+        group_keys = [g['key'] for g in picked]
+        moving = [pid for group in picked for pid in group['pool_ids']]
+        step_index, step_name = -1, '随机 · ' + ' / '.join(g['name'] for g in picked)
+    else:
+        step_index = index % len(cfg['steps'])
+        step = cfg['steps'][step_index]
+        moving, step_name = step['pool_ids'], step['name']
+    desired = list(dict.fromkeys(cfg['fixed_pool_ids'] + moving))
     start = int(cfg['start_ts']) + index * length
     return {'enabled': cfg['enabled'], 'waiting': now < int(cfg['start_ts']), 'signature': signature,
-            'cycle_index': index, 'step_index': step_index, 'step_name': step['name'],
+            'cycle_index': index, 'step_index': step_index, 'step_name': step_name,
+            'mode': cfg['mode'], 'random_group_keys': group_keys,
             'pool_ids': desired, 'start_ts': start, 'next_rotation_ts': start + length,
             'applied_at': int(state.get('applied_at') or 0),
             'notify_required': bool(state.get('notify_required', False))}
@@ -354,4 +425,5 @@ def get_status(db, now_ts=None):
             'battlepass': {'start_ts': start, 'end_ts': end, 'next_weekly_ts': min(end, get_weekly_mon_5am_ts(now) + 7 * DAY)},
             'polyhedron': {'start_ts': poly_start, 'end_ts': poly_end},
             'tasks': {'next_daily_ts': get_daily_5am_ts(now) + DAY, 'next_weekly_ts': get_weekly_mon_5am_ts(now) + 7 * DAY},
-            'rotation': rotation_status(db, now)}
+            'rotation': rotation_status(db, now),
+            'rotation_candidates': random_rotation_groups(db, {**settings['rotation'], 'random_pool_ids': []})}

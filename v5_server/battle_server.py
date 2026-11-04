@@ -104,23 +104,39 @@ def rd_varint(b, i):
             return v, i
 
 
-def parse_pb_top(payload):
-    """顶层 protobuf 字段扫描：{字段号: varint值 或 bytes}。"""
-    out = {}
+def iter_pb_fields(payload):
+    """Scan protobuf fields without discarding repeated message entries."""
     i = 0
+    while i < len(payload):
+        tag, i = rd_varint(payload, i)
+        f, w = tag >> 3, tag & 7
+        if not f:
+            raise ValueError('Invalid protobuf field')
+        if w == 0:
+            v, i = rd_varint(payload, i)
+        elif w == 2:
+            ln, i = rd_varint(payload, i)
+            if ln > len(payload) - i:
+                raise ValueError('Truncated protobuf message')
+            v = payload[i:i + ln]
+            i += ln
+        elif w in (1, 5):
+            size = 8 if w == 1 else 4
+            if size > len(payload) - i:
+                raise ValueError('Truncated fixed-width protobuf field')
+            v = payload[i:i + size]
+            i += size
+        else:
+            raise ValueError('Unsupported protobuf wire type')
+        yield f, v
+
+
+def parse_pb_top(payload):
+    """顶层 protobuf 字段扫描；重复字段取末值。"""
+    out = {}
     try:
-        while i < len(payload):
-            tag, i = rd_varint(payload, i)
-            f, w = tag >> 3, tag & 7
-            if w == 0:
-                v, i = rd_varint(payload, i)
-                out[f] = v
-            elif w == 2:
-                ln, i = rd_varint(payload, i)
-                out[f] = payload[i:i + ln]
-                i += ln
-            else:
-                break
+        for f, value in iter_pb_fields(payload):
+            out[f] = value
     except (IndexError, ValueError):
         pass
     return out
@@ -221,6 +237,17 @@ def parse_battle_result(body):
         info["qte_count"] = int(info_f.get(8, 0))
         info["resurrect_times"] = int(info_f.get(9, 0))
         info["enemy_dead_num"] = int(info_f.get(11, 0))
+        # Opcode 132 info.f10 repeats per-hero statistics. The native client's
+        # logged guild Boss damage equals the sum of each entry's f4.
+        statistics = []
+        for field, value in iter_pb_fields(info_raw):
+            if field == 10 and isinstance(value, bytes):
+                hero = dict(iter_pb_fields(value))
+                statistics.append({'hero_id': int(hero.get(1, 0)),
+                                   'damage': int(hero.get(4, 0))})
+        if statistics:
+            info['hero_damage'] = statistics
+            info['total_damage'] = sum(hero['damage'] for hero in statistics)
     return bid, uuid_v, result, info
 
 

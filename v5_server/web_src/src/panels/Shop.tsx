@@ -21,6 +21,7 @@ import {
 } from '@heroui/react'
 import { PageHeader, StatCard } from '../components/kit'
 import { ItemSlot } from '../components/ItemSlot'
+import ShopRestockSchedule from '../components/ShopRestockSchedule'
 import { useServer } from '../lib/serverContext'
 import {
   fetchShopCatalog,
@@ -251,6 +252,8 @@ export default function ShopPanel() {
           </div>
         }
       />
+
+      <ShopRestockSchedule refreshed={() => { void loadGoods(selectedShopId); void loadCatalogAndStats() }} />
 
       {/* Toast 提示横幅 */}
       {toastMsg && (

@@ -138,6 +138,17 @@ html[data-gm-mode="sub"] :is(button, a, summary) { -webkit-tap-highlight-color: 
   .sub-panel > div > header p { font-size: 12px; }
   .sub-login section { padding: 18px 24px; }
 }
+.self-permissions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+.self-permissions > div { display: grid; gap: 6px; border: 1px solid var(--separator); border-radius: 16px; padding: 14px; background: var(--surface); }
+.self-permissions span { font-size: 12px; color: var(--muted); }
+.self-permissions [data-allowed="true"] span { color: var(--success); }
+.self-card { padding: 18px; border: 1px solid var(--separator); border-radius: 20px; background: var(--surface); margin-bottom: 16px; }
+.self-card h2 { margin: 0 0 14px; font-size: 16px; font-weight: 650; }
+.self-card label { display: grid; gap: 7px; font-size: 13px; margin-bottom: 14px; }
+.self-card :is(input, select) { width: 100%; min-width: 0; min-height: 42px; border: 1px solid var(--separator); border-radius: 12px; padding: 9px 12px; background: var(--field-background, var(--surface)); color: var(--foreground); }
+.self-card fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.self-card fieldset:disabled { opacity: .55; }
+.self-actions { display: flex; gap: 12px; flex-wrap: wrap; }
 @media (prefers-reduced-motion: reduce) {
   html[data-gm-mode="sub"] * { scroll-behavior: auto !important; transition-duration: 0s !important; animation-duration: 0s !important; }
 }

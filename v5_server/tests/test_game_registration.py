@@ -112,7 +112,8 @@ class GameRegistrationTests(unittest.TestCase):
         self.auth.set_disabled(self.known, True)
         before = self.snapshot()
         response = self.login('900002')
-        self.assertEqual(response['errorCode'], '401')
+        self.assertEqual(response, {
+            'errorCode': '403', 'errorMsg': '账号已封禁，请联系管理员', 'data': {}})
         self.assertEqual(self.snapshot(), before)
 
     def test_existing_numeric_json_username_keeps_legacy_login_compatibility(self):

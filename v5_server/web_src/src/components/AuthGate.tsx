@@ -3,6 +3,7 @@ import { apiRequest, getAuthToken, setAuthToken, resolveApiUrl, getStoredApiBase
 
 export interface LoginAccount {
   uid: number; username: string; is_admin: number; fresh_profile: number
+  password_change_required?: boolean
 }
 
 const field = 'w-full rounded-xl border border-default bg-transparent px-3 py-2'
@@ -102,7 +103,7 @@ export default function AuthGate({ children, portal = false }: { children?: Reac
           <button className={button} disabled={busy}>{busy ? '处理中…' : mode === 'setup' ? '保存并绑定原存档' : mode === 'register' ? '注册并登录' : '登录'}</button>
         </form>
         {mode !== 'setup' && <button onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setMessage('') }}>{mode === 'login' ? '没有账号？注册新号' : '已有账号？登录'}</button>}
-        <p className="text-sm text-muted">注册后回到游戏使用账号密码登录，短信验证码入口暂未启用。</p>
+        <p className="text-sm text-muted">游戏内也可通过验证码登录入口注册新号，本地注册码会通过提示显示。已有账号使用账号密码登录。</p>
       </>}
       {message && <p role="status" className="rounded-xl bg-default p-3">{message}</p>}
     </section>

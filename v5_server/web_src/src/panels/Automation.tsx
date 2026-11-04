@@ -131,11 +131,15 @@ export default function AutomationPanel() {
       const start = Math.floor(Date.parse(rotationStart + ':00Z') / 1000) - offset
       if (!Number.isFinite(start)) throw new Error('请填写有效的轮换起始时间')
       const result = await saveRuntimeSchedule({ rotation: { enabled: rotation.enabled, duration_days: rotation.duration_days,
-        start_ts: start, fixed_pool_ids: rotation.fixed_pool_ids, steps: rotation.steps } })
+        mode: rotation.mode ?? 'sequence', random_group_count: rotation.random_group_count ?? 1,
+        random_pool_ids: rotation.random_pool_ids ?? [],
+        start_ts: start, fixed_pool_ids: rotation.fixed_pool_ids,
+        ...(rotation.mode === 'random' ? {} : { steps: rotation.steps }) } })
       if (result.code !== 0) throw new Error(result.msg)
       setData(old => old ? { ...old, ...result.data } : old)
       setRotation(structuredClone(result.data.settings.rotation))
-      setFailed(false); setMessage(rotation.enabled ? '自动轮换已保存，将按起始时间和顺序循环上架。' : '自动轮换已停用。')
+      setFailed(false); setMessage(!rotation.enabled ? '自动轮换已停用。' : rotation.mode === 'random'
+        ? '随机轮换已保存，每轮自动选择卡池。' : '自动轮换已保存，将按顺序循环上架。')
     } catch (error) {
       setFailed(true); setMessage(error instanceof Error ? error.message : '保存失败')
     } finally { setBusy('') }
@@ -201,22 +205,37 @@ export default function AutomationPanel() {
       </Card>
     </Section>
 
-    <Section title="卡池自动轮换" description="常驻池一直开放，轮换组按顺序循环。已有保底和自选目标继续保留。">
+    <Section title="卡池自动轮换" description="常驻池一直开放，可按顺序或随机轮换。已有保底和自选目标继续保留。">
       <Card className="space-y-4 p-5">
         {data && <p className="text-sm">{data.rotation.enabled ? (data.rotation.waiting ? '等待起始时间' : `当前：${data.rotation.step_name}`) : '自动轮换已停用'}
           {data.rotation.enabled && <span className="ml-2 text-xs text-muted">{data.rotation.waiting ? '首次开始' : '下次轮换'} {date(data.rotation.waiting ? data.settings.rotation.start_ts : data.rotation.next_rotation_ts)}</span>}</p>}
         <form onSubmit={saveRotation} className="space-y-4">
           <fieldset disabled={disabled || !rotation} className="space-y-4 disabled:opacity-60">
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={rotation?.enabled ?? false} onChange={e => setRotation(old => old ? { ...old, enabled: e.target.checked } : old)} />启用自动轮换</label>
+            <label className="block space-y-1 text-sm">轮换方式<select className={control} value={rotation?.mode ?? 'sequence'} onChange={e => setRotation(old => old ? { ...old, mode: e.target.value as RotationSettings['mode'] } : old)}>
+              <option value="random">随机选择卡池</option><option value="sequence">按已设置顺序轮换</option>
+            </select></label>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1 text-sm">每组持续天数<input required className={control} type="number" min={1} max={365} value={rotation?.duration_days ?? 7} onChange={e => setRotation(old => old ? { ...old, duration_days: Number(e.target.value) } : old)} /></label>
               <label className="space-y-1 text-sm">第一组开始时间（服务器时间）<input required className={control} type="datetime-local" value={rotationStart} onChange={e => setRotationStart(e.target.value)} /></label>
             </div>
             <details className="rounded-xl border border-separator p-3"><summary className="cursor-pointer text-sm">常驻卡池 · 已选 {rotation?.fixed_pool_ids.length ?? 0} 个</summary>
               <PoolPicker pools={pools} selected={rotation?.fixed_pool_ids ?? []} onChange={ids => setRotation(old => old ? { ...old, fixed_pool_ids: ids,
+                random_pool_ids: (old.random_pool_ids ?? []).filter(id => !ids.includes(id)),
                 steps: old.steps.map(step => ({ ...step, pool_ids: step.pool_ids.filter(id => !ids.includes(id)) })) } : old)} />
             </details>
-            {rotation?.steps.map((step, index) => <div key={index} className="space-y-3 rounded-xl border border-separator p-3">
+            {rotation?.mode === 'random' && <div className="space-y-3 rounded-xl border border-separator p-3">
+              <label className="block space-y-1 text-sm">每轮随机组数<input required type="number" min={1} max={10} className={control} value={rotation.random_group_count ?? 1} onChange={e => setRotation({ ...rotation, random_group_count: Number(e.target.value) })} /></label>
+              <p className="text-xs text-muted">同一主题的原生探测池作为一组。每轮固定选择，重启不会重新抽选；有其它候选时避免连续相同。</p>
+              <details><summary className="cursor-pointer text-sm">候选范围 · {(rotation.random_pool_ids ?? []).length ? '已指定卡池' : '全部适用卡池'}</summary>
+                <p className="my-2 text-xs text-muted">留空会自动使用全部候选，不需要手动编排。</p>
+                <div className="grid gap-2 sm:grid-cols-2">{data?.rotation_candidates?.map(group => ({ ...group, pool_ids: group.pool_ids.filter(id => !rotation.fixed_pool_ids.includes(id)) })).filter(group => group.pool_ids.length > 0).map(group => <label key={group.key} className="flex items-center gap-2 rounded-lg bg-surface-secondary p-2 text-xs">
+                  <input type="checkbox" checked={group.pool_ids.every(id => (rotation.random_pool_ids ?? []).includes(id))} onChange={e => setRotation({ ...rotation, random_pool_ids: e.target.checked ? [...new Set([...(rotation.random_pool_ids ?? []), ...group.pool_ids])] : (rotation.random_pool_ids ?? []).filter(id => !group.pool_ids.includes(id)) })} />
+                  {group.name} · {group.pool_ids.join(' / ')}
+                </label>)}</div>
+              </details>
+            </div>}
+            {rotation?.mode !== 'random' && rotation?.steps.map((step, index) => <div key={index} className="space-y-3 rounded-xl border border-separator p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <label className="min-w-36 flex-1 text-xs">第 {index + 1} 组名称<input required className={control} maxLength={80} value={step.name} onChange={e => setRotation(old => old ? { ...old, steps: old.steps.map((s, i) => i === index ? { ...s, name: e.target.value } : s) } : old)} /></label>
                 <Button type="button" variant="secondary" isDisabled={index === 0} onPress={() => setRotation(old => {
@@ -236,11 +255,11 @@ export default function AutomationPanel() {
               </details>
             </div>)}
             <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="secondary" isDisabled={!rotation || rotation.steps.length >= 30} onPress={() => setRotation(old => old ? { ...old, steps: [...old.steps, { name: `第 ${old.steps.length + 1} 组`, pool_ids: [] }] } : old)}>添加轮换组</Button>
+              {rotation?.mode !== 'random' && <Button type="button" variant="secondary" isDisabled={!rotation || rotation.steps.length >= 30} onPress={() => setRotation(old => old ? { ...old, steps: [...old.steps, { name: `第 ${old.steps.length + 1} 组`, pool_ids: [] }] } : old)}>添加轮换组</Button>}
               <Button type="submit" isDisabled={disabled}>保存轮换设置</Button>
             </div>
           </fieldset>
-          <p className="text-xs text-muted">轮换启用后，每次检查按已保存的轮换组上架卡池。调整起始时间或顺序会重新计算当前组。</p>
+          <p className="text-xs text-muted">保存后按所选方式自动轮换。调整起始时间或候选范围会重新计算当前组。</p>
         </form>
       </Card>
     </Section>

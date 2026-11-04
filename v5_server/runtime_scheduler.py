@@ -45,7 +45,11 @@ def run_once(db, now_ts=None, notify=True):
     except Exception:
         logger.exception('人机活跃检查失败，下次重试')
         social = {'error': 'social_tick_failed'}
-    return {'rotation': rotation, 'mail': delivery, 'social': social}
+    import shop_restock
+    shop = shop_restock.apply_due(db, now)
+    if notify:
+        shop_restock.notify(db, shop)
+    return {'rotation': rotation, 'mail': delivery, 'social': social, 'shop': shop}
 
 
 class RuntimeScheduler:
@@ -60,6 +64,8 @@ class RuntimeScheduler:
     def start(self):
         game_cycles.get_settings(self.db)
         mail_automation.initialize(self.db)
+        import shop_restock
+        shop_restock.get_settings(self.db)
         import social_service
         social_service.initialize(self.db)
         self.thread.start()

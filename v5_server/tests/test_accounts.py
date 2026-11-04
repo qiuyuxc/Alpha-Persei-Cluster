@@ -33,6 +33,7 @@ import generator
 import login
 import fresh_profile
 import res_version_manager
+import local_registration
 from transport import pack_up, unpack_down
 
 OLD = 2174928301
@@ -157,7 +158,10 @@ class AccountTests(unittest.TestCase):
     def test_disable_reenable_does_not_revive_tokens_or_allow_owner_disable(self):
         token = self.auth.issue(self.uid, 'sdk')
         self.auth.set_disabled(self.uid, True)
-        with self.assertRaises(AuthError): self.auth.login('900002', PASSWORD)
+        with self.assertRaises(AuthError) as raised:
+            self.auth.login('900002', PASSWORD)
+        self.assertEqual(raised.exception.status, 403)
+        self.assertEqual(str(raised.exception), '账号已封禁，请联系管理员')
         self.auth.set_disabled(self.uid, False)
         with self.assertRaises(AuthError): self.auth.verify(token, {'sdk'})
         self.assertEqual(self.auth.login('900002', PASSWORD)['uid'], self.uid)
@@ -189,6 +193,50 @@ class AccountTests(unittest.TestCase):
             self.assertNotEqual(client.post('/sdk-api/pass/user/loginByToken', data=body).get_json()['errorCode'], '0')
         self.assertNotEqual(client.post('/sdk-api/pass/user/login', data={'username': '900002', 'password': '00000000' + wire[8:], 'encode': 'true'}).get_json()['errorCode'], '0')
 
+    def test_http_sdk_ban_message_and_unban_login(self):
+        self.auth.set_disabled(self.uid, True)
+        client = self.app_client()
+        before = self.db.query('SELECT * FROM auth_accounts ORDER BY uid')
+        save = self.snapshot(self.uid)
+        wire = hashlib.md5(PASSWORD.encode()).hexdigest()[:8].upper() + base64.b64encode(PASSWORD.encode()).decode()
+        for path, body in (
+            ('/sdk-api/pass/user/login', {'username': '900002', 'password': wire, 'encode': 'true'}),
+            ('/pass/user/login', {'username': '900002', 'password': PASSWORD}),
+        ):
+            with self.subTest(path=path):
+                response = client.post(path, data=body)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json(), {
+                    'errorCode': '403', 'errorMsg': '账号已封禁，请联系管理员', 'data': {}})
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.assertEqual(self.db.query('SELECT * FROM auth_accounts ORDER BY uid'), before)
+        self.assertFalse(self.db.query('SELECT * FROM auth_sessions WHERE uid=?', (self.uid,)))
+        self.assertEqual(self.snapshot(self.uid), save)
+        self.auth.set_disabled(self.uid, False)
+        result = client.post('/sdk-api/pass/user/login', data={
+            'username': '900002', 'password': wire, 'encode': 'true'}).get_json()
+        self.assertEqual(result['errorCode'], '0', result)
+        self.assertEqual(self.auth.verify(result['data']['token'], {'sdk'})['uid'], self.uid)
+
+    def test_http_web_ban_message_keeps_invalid_credentials_distinct(self):
+        self.auth.set_disabled(self.uid, True)
+        client = self.app_client()
+        for username, password, status, message in (
+            ('900002', PASSWORD, 403, '账号已封禁，请联系管理员'),
+            ('900002', 'wrong-password', 401, '账号或密码错误'),
+            ('999999', PASSWORD, 401, '账号或密码错误'),
+            ('900002', None, 401, '账号或密码错误'),
+        ):
+            with self.subTest(username=username, password_valid=password == PASSWORD):
+                response = client.post('/api/auth/login', json={
+                    'username': username, 'password': password})
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(response.get_json(), {'code': status, 'msg': message, 'data': None})
+        self.assertFalse(self.db.query('SELECT * FROM auth_sessions WHERE uid=?', (self.uid,)))
+        owner = client.post('/api/auth/login', json={'username': '900001', 'password': PASSWORD})
+        self.assertEqual(owner.status_code, 200)
+        self.assertEqual(owner.get_json()['data']['uid'], OLD)
+
     def test_http_gm_requires_admin_and_registration_cannot_elevate(self):
         client = self.app_client()
         for path in ('/api/gm/accounts', '/api/gm/gacha/rules', '/api/account/profile'):
@@ -213,6 +261,225 @@ class AccountTests(unittest.TestCase):
             data = client.post('/sdk-api/pass/user/' + path, data={'phone': '900001', 'authCode': '1234', 'newPassword': 'attacker'}).get_json()
             self.assertNotEqual(data['errorCode'], '0', path)
         self.assertEqual(self.auth.login('900001', PASSWORD)['uid'], OLD)
+
+    def local_code(self, client, phone='13900009001', purpose='login', peer='127.0.0.1'):
+        response = client.get('/sdk-api/pass/sms/send', query_string={
+            'phone': phone, 'operType': purpose, 'regionNo': '86', 'nonce': 'fixture'},
+            environ_overrides={'REMOTE_ADDR': peer})
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data['errorCode'], local_registration.CODE_TOAST, data)
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        import re
+        code = re.search(r'[0-9]{8}', data['errorMsg']).group()
+        return code, data
+
+    def submit_local_code(self, client, code, phone='13900009001', peer='127.0.0.1', **extra):
+        return client.post('/sdk-api/pass/user/loginBySms', data={
+            'phone': phone, 'authCode': code, 'regionNo': '86', **extra},
+            environ_overrides={'REMOTE_ADDR': peer})
+
+    def test_local_code_register_sub_gm_password_and_game_login(self):
+        client = self.app_client()
+        code, _ = self.local_code(client)
+        receipt = self.submit_local_code(client, code).get_json()
+        self.assertEqual(receipt['errorCode'], local_registration.REGISTERED_TOAST, receipt)
+        self.assertTrue(receipt['data']['registrationComplete'])
+        self.assertIn('子 GM', receipt['errorMsg'])
+        row = self.db.query("SELECT * FROM auth_accounts WHERE username='13900009001'")[0]
+        self.assertEqual((row['is_admin'], row['password_change_required']), (0, 1))
+        self.assertEqual(self.db.get('users', row['uid'])['level'], 1)
+        self.assertFalse(self.db.query('SELECT * FROM auth_sessions WHERE uid=?', (row['uid'],)))
+        self.assertFalse(self.db.query('SELECT * FROM auth_registration_codes'))
+        with self.assertRaises(AuthError):
+            self.auth.login('13900009001', code, 'sdk')
+        with self.assertRaises(AuthError):
+            self.auth.issue(row['uid'], 'sdk')
+        web = client.post('/api/auth/login', json={'username': '13900009001', 'password': code}).get_json()
+        self.assertTrue(web['data']['password_change_required'])
+        token = web['data']['token']
+        headers = {'Authorization': 'Bearer ' + token}
+        self.assertEqual(client.get('/api/sub-gm/me', headers=headers).status_code, 403)
+        for password in ('short', code):
+            self.assertEqual(client.post('/api/auth/password', headers=headers, json={
+                'old_password': code, 'password': password}).status_code, 400)
+            self.assertTrue(self.auth.verify(token, {'web'})['password_change_required'])
+        self.assertEqual(client.post('/api/auth/password', headers=headers, json={
+            'old_password': 'wrong-password', 'password': 'PermanentPassword49'}).status_code, 401)
+        changed = client.post('/api/auth/password', headers=headers, json={
+            'old_password': code, 'password': 'PermanentPassword49'})
+        self.assertEqual(changed.get_json()['code'], 0)
+        with self.assertRaises(AuthError): self.auth.verify(token, {'web'})
+        with self.assertRaises(AuthError): self.auth.login('13900009001', code)
+        result = self.auth.login('13900009001', 'PermanentPassword49', 'sdk')
+        self.assertFalse(result['password_change_required'])
+        self.assertEqual(self.auth.verify(result['token'], {'sdk'})['uid'], row['uid'])
+        personal = self.auth.login('13900009001', 'PermanentPassword49')
+        self.assertEqual(client.get('/api/sub-gm/me', headers={
+            'Authorization': 'Bearer ' + personal['token']}).status_code, 200)
+        self.assertEqual(self.snapshot(OLD), self.old_save)
+
+    def test_local_code_binds_phone_and_request_source(self):
+        client = self.app_client()
+        code, _ = self.local_code(client)
+        for phone, peer in (('13900009002', '127.0.0.1'), ('13900009001', '198.51.100.2')):
+            with self.subTest(phone=phone, peer=peer):
+                self.assertEqual(self.submit_local_code(client, code, phone, peer).get_json()['errorCode'], '400')
+        self.assertEqual(self.db.query('SELECT attempts FROM auth_registration_codes')[0]['attempts'], 0)
+        self.assertFalse(self.db.query("SELECT * FROM auth_accounts WHERE username LIKE '1390000900%'"))
+        self.assertEqual(self.submit_local_code(client, code).get_json()['errorCode'], local_registration.REGISTERED_TOAST)
+
+    def test_local_code_expiry_and_resend_replace_old_code(self):
+        client = self.app_client()
+        now = 1793691600
+        with patch('time.time', return_value=now):
+            code, _ = self.local_code(client)
+            cooldown = client.get('/sdk-api/pass/sms/send', query_string={'phone': '13900009001', 'operType': 'login'})
+            self.assertEqual(cooldown.get_json()['errorCode'], '429')
+        with patch('time.time', return_value=now + local_registration.CODE_TTL):
+            self.assertEqual(self.submit_local_code(client, code).get_json()['errorCode'], '400')
+            replacement, _ = self.local_code(client)
+            if replacement == code:
+                with patch('time.time', return_value=now + 2 * local_registration.CODE_TTL):
+                    replacement, _ = self.local_code(client)
+            self.assertNotEqual(replacement, code)
+            self.assertEqual(self.submit_local_code(client, code).get_json()['errorCode'], '400')
+            self.assertEqual(self.submit_local_code(client, replacement).get_json()['errorCode'], local_registration.REGISTERED_TOAST)
+
+    def test_local_code_failed_attempts_survive_database_reopen(self):
+        client = self.app_client()
+        code, _ = self.local_code(client)
+        for number in range(local_registration.MAX_ATTEMPTS):
+            result = self.submit_local_code(client, 'invalid-code').get_json()
+            self.assertEqual(result['errorCode'], '429' if number == 4 else '400')
+            self.assertEqual(self.db.query('SELECT attempts FROM auth_registration_codes')[0]['attempts'], number + 1)
+        reopened = AccountDB(str(self.path))
+        try:
+            other = get_service(reopened)
+            with self.assertRaises(AuthError) as raised:
+                local_registration.register(other, '13900009001', code, '127.0.0.1')
+            self.assertEqual(raised.exception.status, 429)
+            self.assertFalse(reopened.query("SELECT * FROM auth_accounts WHERE username='13900009001'"))
+        finally:
+            reopened.close()
+
+    def test_local_code_does_not_modify_existing_admin_player_or_banned(self):
+        self.auth.set_disabled(self.uid, True)
+        client = self.app_client()
+        before = self.db.query('SELECT * FROM auth_accounts ORDER BY uid')
+        for username in ('900001', '900002'):
+            with self.subTest(username=username):
+                send = client.get('/sdk-api/pass/sms/send', query_string={'phone': username, 'operType': 'login'})
+                self.assertEqual(send.get_json()['errorCode'], '409')
+                self.assertEqual(self.submit_local_code(client, '12345678', username).get_json()['errorCode'], '409')
+        self.assertEqual(self.db.query('SELECT * FROM auth_accounts ORDER BY uid'), before)
+        self.assertFalse(self.db.query('SELECT * FROM auth_registration_codes'))
+        self.assertEqual(self.auth.login('900001', PASSWORD)['uid'], OLD)
+        with self.assertRaises(AuthError) as raised: self.auth.login('900002', PASSWORD)
+        self.assertEqual(str(raised.exception), '账号已封禁，请联系管理员')
+        self.assertEqual(self.snapshot(OLD), self.old_save)
+
+    def test_local_code_later_password_registration_cannot_be_overwritten(self):
+        client = self.app_client()
+        code, _ = self.local_code(client)
+        original = self.auth.create('13900009001', 'OwnerChosenPassword49')
+        result = self.submit_local_code(client, code).get_json()
+        self.assertEqual(result['errorCode'], '409')
+        self.assertEqual(self.auth.login('13900009001', 'OwnerChosenPassword49')['uid'], original['uid'])
+        with self.assertRaises(AuthError): self.auth.login('13900009001', code)
+        self.assertFalse(self.auth.account(original['uid'])['password_change_required'])
+
+    def test_local_code_is_consumed_once_with_concurrent_registration(self):
+        client = self.app_client()
+        code, _ = self.local_code(client)
+        def register(_):
+            try:
+                return local_registration.register(self.auth, '13900009001', code, '127.0.0.1')['uid']
+            except AuthError:
+                return None
+            finally:
+                self.db.close()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(register, range(2)))
+        self.assertEqual(sum(value is not None for value in results), 1)
+        rows = self.db.query("SELECT uid FROM auth_accounts WHERE username='13900009001'")
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(self.db.query('SELECT * FROM auth_registration_codes'))
+        self.assertFalse(self.db.query('SELECT * FROM auth_sessions WHERE uid=?', (rows[0]['uid'],)))
+
+    def test_local_code_initialization_failure_rolls_back_and_code_can_retry(self):
+        client = self.app_client()
+        code, _ = self.local_code(client)
+        before = {table: self.db.query(f'SELECT * FROM {table}')
+                  for table in ('users', 'auth_accounts', 'currency', 'auth_registration_codes')}
+        def broken(db, uid, *args):
+            db.execute('INSERT INTO users(uid) VALUES (?)', (uid,))
+            db.set_currency(uid, 1, 7)
+            raise RuntimeError('injected registration initialization failure')
+        with patch('fresh_profile.initialize', side_effect=broken):
+            response = self.submit_local_code(client, code)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['errorCode'], '500')
+        self.assertEqual({table: self.db.query(f'SELECT * FROM {table}') for table in before}, before)
+        self.assertEqual(self.submit_local_code(client, code).get_json()['errorCode'], local_registration.REGISTERED_TOAST)
+
+    def test_local_code_registered_toast_ignores_privilege_and_password_injection(self):
+        client = self.app_client()
+        code, toast = self.local_code(client, purpose='regist')
+        self.assertIn('验证码登录', toast['errorMsg'])
+        receipt = client.post('/sdk-api/pass/user/registerBySms', data={
+            'phone': '13900009001', 'authCode': code, 'uid': OLD, 'is_admin': 1,
+            'setup_token': self.setup_token, 'password': 'AttackerPassword49'}).get_json()
+        self.assertEqual(receipt['errorCode'], local_registration.REGISTERED_TOAST)
+        created = self.auth.login('13900009001', code)
+        self.assertNotEqual(created['uid'], OLD)
+        self.assertEqual(created['is_admin'], 0)
+        self.assertTrue(created['password_change_required'])
+        with self.assertRaises(AuthError): self.auth.login('13900009001', 'AttackerPassword49')
+        self.assertEqual(self.snapshot(OLD), self.old_save)
+
+    def test_local_code_unsupported_purpose_methods_and_disabled_mode(self):
+        client = self.app_client()
+        for purpose in ('password', 'bind', 'unbind'):
+            data = client.get('/sdk-api/pass/sms/send', query_string={
+                'phone': '13900009001', 'operType': purpose}).get_json()
+            self.assertEqual(data['errorCode'], '403')
+        self.assertEqual(client.put('/sdk-api/pass/sms/send', json={}).get_json()['errorCode'], '405')
+        self.db.set_system_config(local_registration.KEY, '0')
+        self.assertFalse(client.get('/api/auth/status').get_json()['data']['local_code_registration'])
+        self.assertEqual(client.get('/sdk-api/pass/sms/send', query_string={
+            'phone': '13900009001', 'operType': 'login'}).get_json()['errorCode'], '403')
+        self.assertFalse(self.db.query('SELECT * FROM auth_registration_codes'))
+
+    def test_local_code_migrates_legacy_account_schema_without_changing_credentials(self):
+        from auth_service import AuthService
+        self.db.execute('ALTER TABLE auth_accounts DROP COLUMN password_change_required')
+        before = self.db.query('SELECT uid,password_hash,token_version FROM auth_accounts ORDER BY uid')
+        migrated = AuthService(self.db)
+        self.assertEqual(self.db.query('SELECT uid,password_hash,token_version FROM auth_accounts ORDER BY uid'), before)
+        self.assertFalse(migrated.login('900001', PASSWORD)['password_change_required'])
+        self.assertEqual(self.snapshot(OLD), self.old_save)
+
+    def test_local_code_keeps_password_sdk_auto_registration_available(self):
+        client = self.app_client()
+        result = client.post('/sdk-api/pass/user/login', data={
+            'username': '13900009003', 'password': PASSWORD}).get_json()
+        self.assertEqual(result['errorCode'], '0', result)
+        uid = result['data']['userId']
+        self.assertFalse(self.auth.account(uid)['password_change_required'])
+        self.assertEqual(self.auth.verify(result['data']['token'], {'sdk'})['uid'], uid)
+
+    def test_local_code_issuance_exception_is_not_sdk_success(self):
+        client = self.app_client()
+        with patch('local_registration.secrets.token_hex', side_effect=RuntimeError('injected issuance failure')):
+            response = client.get('/sdk-api/pass/sms/send', query_string={
+                'phone': '13900009001', 'operType': 'login'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {
+            'errorCode': '500', 'errorMsg': '验证码注册服务异常，请稍后再试', 'data': {}})
+        self.assertFalse(self.db.query('SELECT * FROM auth_registration_codes'))
+        self.assertFalse(self.db.query("SELECT * FROM auth_accounts WHERE username='13900009001'"))
+        self.local_code(client)
 
     def test_registration_rate_limit_and_no_password_query_login(self):
         client = self.app_client()

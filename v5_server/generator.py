@@ -803,15 +803,9 @@ def gen_payload(cmd, uid=DEFAULT_UID, db=None, **kw):
     if cmd == 17027:
         # 累计签到数据（accumulatesigndata.lua:19-26 InitAccumulateSignData）
         # 此前登录洪流用素材静态帧：领取后 award_ids 不更新，重登"复活"红点
-        row = db.query("SELECT version, open_sign, login_days FROM accumulate_sign WHERE uid=?", (uid,))
-        aids = db.query("SELECT award_id FROM accumulate_sign_award WHERE uid=? ORDER BY award_id", (uid,))
-        if row:
-            return encode("sc_17027", {
-                "version": int(row[0].get("version") or 1),
-                "open_sign": int(row[0].get("open_sign") or 0),
-                "login_days": int(row[0].get("login_days") or 0),
-                "award_ids": [int(r["award_id"]) for r in aids]})
-        return None
+        from accumulate_sign_status import payload
+        data = payload(db, uid)
+        return encode('sc_17027', data) if data else None
     if cmd == 17033:
         # 累计签到折扣购买/战令数据（accumulatesigndata.lua:28-34 InitDiscountData）
         row = db.query("SELECT version, cumulative_buy_card_num FROM accumulate_sign_discount WHERE uid=?", (uid,))

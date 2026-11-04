@@ -10,6 +10,7 @@ reserve_codec.py — 预备编队与出战队伍持久化编解码器（sc_63005
 """
 import json
 import time
+from contextlib import contextmanager
 
 from formation_codec import build_formation_fields
 
@@ -269,11 +270,39 @@ def parse_cs_63000_raw(payload):
     return res
 
 
+@contextmanager
+def _reserve_write_transaction(db):
+    """Commit standalone saves while preserving an enclosing request transaction."""
+    if callable(getattr(db, "transaction", None)):
+        from account_db import savepoint_transaction
+        with savepoint_transaction(db):
+            yield db._checked_conn()
+        return
+
+    connection = db._conn() if hasattr(db, "_conn") else db
+    connection.execute("SAVEPOINT reserve_team_write")
+    try:
+        yield connection
+        connection.execute("RELEASE SAVEPOINT reserve_team_write")
+    except BaseException:
+        try:
+            connection.execute("ROLLBACK TO SAVEPOINT reserve_team_write")
+            connection.execute("RELEASE SAVEPOINT reserve_team_write")
+        except BaseException:
+            connection.close()
+            raise
+        raise
+
+
 def save_team_from_cs_63000(db, uid, req_data):
-    """解析客户端 cs_63000 编队保存请求并写入数据库"""
+    """Save one client's teams atomically under the owning request transaction."""
     if db is None or not req_data:
         return False
-    
+    with _reserve_write_transaction(db) as connection:
+        return _save_team_data(db, uid, req_data, connection)
+
+
+def _save_team_data(db, uid, req_data, raw_conn):
     def _to_int(v, default=0):
         try:
             return int(v)
@@ -286,7 +315,6 @@ def save_team_from_cs_63000(db, uid, req_data):
     cont_id = _to_int(cont_team.get("cont_id"))
     teams = cont_team.get("teams") or []
     
-    raw_conn = db._conn() if hasattr(db, "_conn") else db
     cur = raw_conn.cursor()
     now_ts = int(time.time())
     
@@ -339,7 +367,6 @@ def save_team_from_cs_63000(db, uid, req_data):
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """, (uid, tt, cont_id, t_idx, slot, hid, oid, htype, now_ts))
                 
-    raw_conn.commit()
     return True
 
 

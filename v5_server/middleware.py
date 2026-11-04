@@ -1352,20 +1352,22 @@ def build_battle_result(bid, result, dest, clear_times=1, drops=None, heroes=Non
 
 def _settle_frames(ctx, uid, bid, result, dest, times=1, heroes=None, sweep=False, battle_info=None, stage_type=0, activity_id=0):
     """结算引擎：掉落计算 + 首通/重复奖励区分 + 体力扣减 + 熟练度/好感/经验成长 + 进度推进 → 返回 (battle_result dict, 附加帧列表)。"""
-    if stage_type == 32:
+    if stage_type in (32, 33):
         import guild_prepose
+        import guild_boss
         import json
         import social_service as social
         from social_protocol import frame
-        run, replay = guild_prepose.settle(ctx.db, uid, bid, result, battle_info or {}, int(time.time()))
-        br = build_battle_result(bid, run['result'], run['level_id'], heroes=json.loads(run['heroes']),
+        service = guild_prepose if stage_type == 32 else guild_boss
+        run, replay = service.settle(ctx.db, uid, bid, result, battle_info or {}, int(time.time()))
+        br = build_battle_result(bid, run['result'], run['level_id'] if stage_type == 32 else 6, heroes=json.loads(run['heroes']),
                                  use_seconds=run['use_seconds'], star_ids=())
         br['timestamp'] = run['finished_at']
         extra = []
         if not replay:
             if run['result'] == 1:
                 from task_listener import _trigger_task_condition
-                # Preparation destinations are guild slots, not normal stage
+                # Family destinations are guild slots, not normal stage
                 # IDs. Only advance the generic "clear any stage" condition.
                 changed = _trigger_task_condition(ctx.db, uid, condition=402, delta=1)
                 if changed:
@@ -2263,6 +2265,9 @@ def h_54030(req, ctx):
                             mimir_info=info.get("mimir_info") or {})
     if info.get('type') == 32:
         guild_prepose.start(ctx.db, effective_uid, bid, info, int(time.time()))
+    elif info.get('type') == 33:
+        import guild_boss
+        guild_boss.start(ctx.db, effective_uid, bid, info, int(time.time()))
 
     # 自动持久化出战编队（旧逻辑，已停用）：reserve_team 预设不再被出战数据污染，
     # 编队记录由下方 TEAM SERVER 关卡现役编队接管（sync_stage_battle_team 保留备回滚）
@@ -2351,9 +2356,15 @@ def h_54032(req, ctx):
     session = get_battle_session(bid) or {}
     if not session and ctx.db is not None:
         import guild_prepose
-        persisted = guild_prepose.find_run(ctx.db, req.uid, bid)
+        import guild_boss
+        import json
+        persisted = guild_boss.find_run(ctx.db, req.uid, bid)
+        persisted_type = 33 if persisted else 32
+        if not persisted:
+            persisted = guild_prepose.find_run(ctx.db, req.uid, bid)
         if persisted:
-            session = {'uid': req.uid, 'dest': persisted['level_id'], 'stage_type': 32}
+            session = {'uid': req.uid, 'dest': 6 if persisted_type == 33 else persisted['level_id'],
+                       'stage_type': persisted_type, 'heroes': json.loads(persisted['heroes'])}
             if persisted['state'] == 1:
                 session['result_data'] = {'result': persisted['result'],
                                           'info': {'battle_time': persisted['use_seconds'] * 1000}}
@@ -2380,7 +2391,7 @@ def h_54032(req, ctx):
         result = int(res_obj or 1)
         b_info = {}
 
-    if stage_type == 32:
+    if stage_type in (32, 33):
         # A failed SQL/packet transaction must not turn the in-memory cache into
         # a successful replay. The committed run ledger decides idempotency.
         br, extra = _settle_frames(ctx, req.uid, bid, result, dest, times=times, heroes=heroes,
@@ -2395,7 +2406,7 @@ def h_54032(req, ctx):
         session["br"] = br
     _p33 = ctx.codec_encode("sc_54033", {"result": 0, "battle_result": br}) or b"\x08\x00"
     ctx.log(f"cs_54032 -> 结算 bid={bid} result={result} dest={dest} 掉落组={len(br['all_drop_list'])} 三星={br.get('star_list')}")
-    if stage_type == 32:
+    if stage_type in (32, 33):
         return CSResponse([DownFrame(54033, _p33)] + extra)
     return CSResponse(extra + [DownFrame(54033, _p33)])
 
@@ -2462,7 +2473,7 @@ def h_54038(req, ctx):
 
 
 def h_63000(req, ctx):
-    """保存编队 → sc_63001(result=0) + 持久化写入 reserve_team/reserve_team_hero"""
+    """保存编队；写库失败回复非零，成功提交由外层回包事务负责。"""
     import reserve_codec
     req_data = {}
     if req.payload:
@@ -2478,7 +2489,8 @@ def h_63000(req, ctx):
         try:
             reserve_codec.save_team_from_cs_63000(ctx.db, req.uid, req_data)
         except Exception as e:
-            ctx.log(f"[reserve] cs_63000 写库失败: {e}", "WARN")
+            ctx.log(f"[reserve] cs_63000 写库失败: {e}", "ERROR")
+            return CSResponse([DownFrame(63001, b"\x08\x09")])
     ctx.log(f"cs_63000 -> 保存编队 team_type={req_data.get('team_type', 0)}")
     return CSResponse([DownFrame(63001, b"\x08\x00")])
 

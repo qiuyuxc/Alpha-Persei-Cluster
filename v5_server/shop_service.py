@@ -20,6 +20,7 @@ import zlib
 import re
 import logging
 from copy import deepcopy
+from functools import wraps
 from codec import encode, decode
 from middleware import DownFrame
 from event_bus import bus, Events
@@ -31,6 +32,19 @@ from enchant_slots_util import normalize_enchant_slots
 from operation_notifications import operation_transaction
 from client_platform import normalize_platform
 from shop_pricing import quote, declared_costs
+
+
+def _restock_payload(function):
+    @wraps(function)
+    def wrapped(self, uid, *args, **kwargs):
+        if not self.db:
+            return function(self, uid, *args, **kwargs)
+        import shop_restock
+        with self.db.transaction(immediate=True):
+            now = int(time.time())
+            shop_restock.apply_due(self.db, now)
+            return shop_restock.normalize_payload(self.db, function(self, uid, *args, **kwargs), now, uid)
+    return wrapped
 
 logger = logging.getLogger("shop_service")
 
@@ -206,16 +220,18 @@ class ShopService:
 
     # ==================== 2. 每日采购（Shop 2）加权抽取与货架维护 ====================
 
-    def roll_daily_shop_goods(self, uid, force_new=False):
+    def roll_daily_shop_goods(self, uid, force_new=False, *, now_ts=None):
         """
         按照官方 13 个槽位（1~9, 11~14）加权随机抽取每日采购货架商品
         :param uid: 玩家 UID
         :param force_new: 是否强制重新生成（跨天 05:00 或主动刷新）
         :return: 包含 13 个 goods_info 字典的列表
         """
-        now_ts = int(time.time())
-        cur_5am = get_daily_5am_ts(now_ts)
-        tomorrow_5am = cur_5am + 86400
+        now_ts = int(time.time()) if now_ts is None else int(now_ts)
+        import shop_restock
+        if self.db and not force_new:
+            shop_restock.apply_due(self.db, now_ts)
+        cur_5am, tomorrow_5am = shop_restock.daily_window(self.db, uid, now_ts) if self.db else (get_daily_5am_ts(now_ts), get_daily_5am_ts(now_ts) + 86400)
 
         pool = self._get_daily_shop_pool()
         if not pool:
@@ -283,7 +299,10 @@ class ShopService:
     def get_daily_shop_info(self, uid):
         """获取玩家当前每日采购的完整状态 (refresh_times, goods_list)"""
         now_ts = int(time.time())
-        cur_5am = get_daily_5am_ts(now_ts)
+        import shop_restock
+        if self.db:
+            shop_restock.apply_due(self.db, now_ts)
+        cur_5am = shop_restock.daily_window(self.db, uid, now_ts)[0] if self.db else get_daily_5am_ts(now_ts)
 
         refresh_times = 0
         if self.db:
@@ -420,6 +439,7 @@ class ShopService:
             for shop in self.get_shop_cfg_payload()["shop_item_cfg_list"]
         }
 
+    @_restock_payload
     def get_shop_data_payload(self, uid):
         """
         动态生成全量 116+ 商店购买状态与限购数据（sc_20009）：
@@ -514,6 +534,7 @@ class ShopService:
 
         return {"shop_item_list": out_shops}
 
+    @_restock_payload
     def get_single_shop_payload(self, uid, shop_id):
         """获取单个商店的变动信息（sc_20005 changed_shop_info）"""
         sid = int(shop_id)
@@ -940,6 +961,9 @@ class ShopService:
 
             item_sid = int(g.get("shop_id") or sid or 0)
             if self.db:
+                import shop_restock
+                cfg = shop_restock.get_settings(self.db, now)
+                nr_ts = shop_restock.window(cfg, shop_restock.state(self.db), now)[1] if shop_restock.managed(cfg, item_sid, refresh_cycle) else shop_restock.native_next(refresh_cycle, now)
                 self.db.upsert(
                     "store_purchase",
                     uid,
@@ -1045,17 +1069,23 @@ class ShopService:
         if not self.db:
             return 0
         now_ts = int(time.time())
-        rows = self.db.query("SELECT buy_times, next_refresh_timestamp FROM store_purchase WHERE uid=? AND goods_id=?", (uid, goods_id))
+        import shop_restock
+        shop_restock.apply_due(self.db, now_ts)
+        rows = self.db.query("SELECT shop_id,buy_times,next_refresh_timestamp FROM store_purchase WHERE uid=? AND goods_id=?", (uid, goods_id))
         if not rows:
             return 0
-        nr = int(rows[0].get("next_refresh_timestamp") or 0)
-        if nr > 0 and nr <= now_ts:
+        row = rows[0]
+        sid = int(row['shop_id'])
+        cycle = shop_restock.cycle_for(self.db, sid, goods_id)
+        bought, _ = shop_restock.normalize(shop_restock.get_settings(self.db, now_ts), shop_restock.state(self.db),
+                                          sid, cycle, row['buy_times'], row['next_refresh_timestamp'], now_ts)
+        if bought == 0 and int(row['buy_times'] or 0) > 0:
             try:
                 self.db.execute("DELETE FROM store_purchase WHERE uid=? AND goods_id=?", (uid, goods_id))
             except Exception:
                 pass
             return 0
-        return int(rows[0]["buy_times"] or 0)
+        return bought
 
     def _find_goods_cfg(self, goods_id, shop_id):
         """寻找商品元数据（优先 shop_goods，其次 daily_shop_pool）"""
@@ -1162,7 +1192,7 @@ class ShopService:
 
     # ==================== 6. 全局定时器 (LazyTimer) 周期重置订阅 ====================
 
-    def on_daily_reset_5am(self, ctx, uid, cycle_start_ts=0, now_ts=None, **kwargs):
+    def on_daily_reset_5am(self, ctx, uid, cycle_start_ts=0, now_ts=None, force=False, **kwargs):
         """
         每日 05:00 跨天周期重置：
         1. 仅定向清理 refresh_cycle == 4 (每日限购) 的已购记录（严控边界：严禁误清同商店内的月度/永久限购商品）；
@@ -1176,20 +1206,17 @@ class ShopService:
             now_ts = int(time.time())
 
         # 1. 每日采购（Shop 2）全量货架重抽并清空
-        self.roll_daily_shop_goods(uid, force_new=True)
-        self.db.execute("UPDATE user_daily_shop SET refresh_times=0, last_refresh_ts=?, update_ts=? WHERE uid=?",
-                        (now_ts, now_ts, uid))
-        self.db.execute("DELETE FROM store_purchase WHERE uid=? AND shop_id=2", (uid,))
+        import shop_restock
+        cfg = shop_restock.get_settings(self.db, now_ts)
+        if force or not shop_restock.covers(cfg, 2):
+            self.roll_daily_shop_goods(uid, force_new=True, now_ts=now_ts)
+            self.db.execute("UPDATE user_daily_shop SET refresh_times=0, last_refresh_ts=?, update_ts=? WHERE uid=?",
+                            (now_ts, now_ts, uid))
 
         # 2. 仅精确定向删除 refresh_cycle == 4 的日限购商品（如日常补给 Shop 4 中的每日应急冷却包 4034501）
         # 严禁误伤同商店内的永久限购 (refresh_cycle=1) 或月限购 (refresh_cycle=2) 礼包！
         try:
-            self.db.execute("""
-                DELETE FROM store_purchase
-                WHERE uid=? AND goods_id IN (
-                    SELECT goods_id FROM shop_goods WHERE refresh_cycle = 4 AND shop_id != 2
-                )
-            """, (uid,))
+            shop_restock.reset_native_cycle(self.db, uid, 4, now_ts, force=force)
         except Exception:
             pass
 
@@ -1224,33 +1251,25 @@ class ShopService:
         if hasattr(ctx, "log"):
             ctx.log(f"[ShopService] 用户 {uid} 触发每日 05:00 商城重置（每日采购货架/次数已重置，日常补给每日应急冷却包已重置）")
 
-    def on_weekly_reset_mon_5am(self, ctx, uid, cycle_start_ts=0, now_ts=None, **kwargs):
+    def on_weekly_reset_mon_5am(self, ctx, uid, cycle_start_ts=0, now_ts=None, force=False, **kwargs):
         """每周一 05:00 跨周周期重置：清理 refresh_cycle == 3 (每周限购) 的已购记录"""
         if not uid or not self.db:
             return
         try:
-            self.db.execute("""
-                DELETE FROM store_purchase
-                WHERE uid=? AND goods_id IN (
-                    SELECT goods_id FROM shop_goods WHERE refresh_cycle = 3
-                )
-            """, (uid,))
+            import shop_restock
+            shop_restock.reset_native_cycle(self.db, uid, 3, int(time.time()) if now_ts is None else int(now_ts), force=force)
         except Exception:
             pass
         if hasattr(ctx, "log"):
             ctx.log(f"[ShopService] 用户 {uid} 触发每周一 05:00 商城重置（周限购已清空）")
 
-    def on_monthly_reset_5am(self, ctx, uid, cycle_start_ts=0, now_ts=None, **kwargs):
+    def on_monthly_reset_5am(self, ctx, uid, cycle_start_ts=0, now_ts=None, force=False, **kwargs):
         """每月 1 日 05:00 跨月周期重置：清理 refresh_cycle == 2 (每月限购) 的已购记录"""
         if not uid or not self.db:
             return
         try:
-            self.db.execute("""
-                DELETE FROM store_purchase
-                WHERE uid=? AND goods_id IN (
-                    SELECT goods_id FROM shop_goods WHERE refresh_cycle = 2
-                )
-            """, (uid,))
+            import shop_restock
+            shop_restock.reset_native_cycle(self.db, uid, 2, int(time.time()) if now_ts is None else int(now_ts), force=force)
         except Exception:
             pass
         if hasattr(ctx, "log"):
@@ -1263,10 +1282,8 @@ class ShopService:
         if now_ts is None:
             now_ts = int(time.time())
         try:
-            self.db.execute(
-                "DELETE FROM store_purchase WHERE uid=? AND next_refresh_timestamp > 0 AND next_refresh_timestamp <= ?",
-                (uid, now_ts)
-            )
+            import shop_restock
+            shop_restock.expire_native(self.db, uid, now_ts)
         except Exception:
             pass
 
@@ -1311,13 +1328,13 @@ class ShopService:
                 pass
         ctx = DummyCtx(self.db)
         if cycle_type == "daily":
-            self.on_daily_reset_5am(ctx, uid, now_ts=now_ts)
+            self.on_daily_reset_5am(ctx, uid, now_ts=now_ts, force=True)
             return True, "已强制触发每日 05:00 商城重置"
         elif cycle_type == "weekly":
-            self.on_weekly_reset_mon_5am(ctx, uid, now_ts=now_ts)
+            self.on_weekly_reset_mon_5am(ctx, uid, now_ts=now_ts, force=True)
             return True, "已强制触发每周一 05:00 商城重置"
         elif cycle_type == "monthly":
-            self.on_monthly_reset_5am(ctx, uid, now_ts=now_ts)
+            self.on_monthly_reset_5am(ctx, uid, now_ts=now_ts, force=True)
             return True, "已强制触发每月 1 日 05:00 商城重置"
         return False, f"未知周期类型: {cycle_type}"
 

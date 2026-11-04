@@ -457,6 +457,38 @@ class SocialTests(unittest.TestCase):
         self.assertTrue(all(r['score'] == 0 for r in fresh['pre_info']))
         self.assertEqual(len(self.db.query('SELECT * FROM social_prepose_scores WHERE week_id=?', (NOW,))), len(stored))
 
+    def test_temporary_boss_opening_updates_login_and_real_player_battle_gate(self):
+        import guild_cycle
+        import guild_prepose
+        self.join()
+        self.clock.return_value = opened = NOW + 2 * social.DAY
+        hero = self.db.query('SELECT id FROM hero WHERE uid=? AND unlock=1 ORDER BY id', (UID,))[0]['id']
+        info = {'type': 33, 'dest': 6, 'hero_details': [
+                    {'hero_id': hero, 'hero_type': 1, 'owner_id': UID}]}
+        with self.assertRaisesRegex(ValueError, '当前无法进行家族首领挑战'):
+            guild_prepose.validate_start(self.db, UID, info, opened)
+        tables = ('social_members', 'social_prepose_scores', 'social_prepose_daily',
+                  'social_boss_scores', 'social_reward_claims', 'currency')
+        before = {table: self.db.query('SELECT * FROM ' + table) for table in tables}
+        with patch.dict(os.environ, {guild_cycle.TEST_START_ENV: str(opened)}):
+            payload = decode(gm_actions.generator.gen_payload(11001, uid=UID,
+                             db=self.db, res_version='321'), 'sc_11001')
+            rows = {row['activity_id']: row for row in payload['activity_list']}
+            self.assertEqual(rows[102]['stop_time'], opened)
+            self.assertEqual(rows[103]['start_time'], opened)
+            self.assertEqual(rows[103]['stop_time'], NOW + 7 * social.DAY)
+            self.assertEqual(guild_prepose.validate_start(self.db, UID, info, opened)['guild_id'], GID)
+            with self.assertRaisesRegex(ValueError, '裂隙征兆阶段才能进行前置挑战'):
+                guild_prepose.validate_start(self.db, UID, {**info, 'type': 32, 'dest': 1}, opened)
+            with self.assertRaisesRegex(ValueError, '尚未达到奖励条件'):
+                protocol._claim_reward(self.db, self.ctx, UID,
+                    {'club_id': GID, 'type': 2, 'award_id': 25}, opened)
+            with self.assertRaisesRegex(ValueError, '当前无法进行家族首领挑战'):
+                guild_prepose.validate_start(self.db, UID, info, NOW + 7 * social.DAY)
+            self.assertEqual(guild_prepose.validate_start(self.db, UID,
+                {**info, 'type': 32, 'dest': 1}, NOW + 7 * social.DAY)['guild_id'], GID)
+        self.assertEqual(before, {table: self.db.query('SELECT * FROM ' + table) for table in tables})
+
     def test_rift_migration_preserves_existing_contributions_rewards_and_assets(self):
         import guild_cycle
         self.join()

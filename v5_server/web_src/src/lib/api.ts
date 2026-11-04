@@ -787,6 +787,9 @@ export interface RotationStep {
 
 export interface RotationSettings {
   enabled: boolean
+  mode: 'sequence' | 'random'
+  random_group_count: number
+  random_pool_ids: number[]
   duration_days: number
   start_ts: number
   fixed_pool_ids: number[]
@@ -829,6 +832,7 @@ export interface AutomationStatus {
   polyhedron: { start_ts: number; end_ts: number }
   tasks: { next_daily_ts: number; next_weekly_ts: number }
   rotation: { enabled: boolean; waiting: boolean; step_index: number; step_name: string; start_ts: number; next_rotation_ts: number; applied_at: number }
+  rotation_candidates: Array<{ key: string; name: string; pool_ids: number[] }>
   mail_rules: LevelMailRule[]
   scheduler: { running: boolean; interval_seconds: number; last_tick_ts: number; last_error: string; sent_count: number; failed_count: number }
 }
@@ -840,7 +844,7 @@ export async function fetchAutomationStatus(): Promise<ApiResponse<AutomationSta
 export async function saveRuntimeSchedule(patch: {
   battlepass?: { duration_days: number }
   polyhedron?: { duration_days: number }
-  rotation?: Omit<RotationSettings, 'updated_at'>
+  rotation?: Omit<RotationSettings, 'updated_at' | 'steps'> & { steps?: RotationStep[] }
 }): Promise<ApiResponse<Omit<AutomationStatus, 'mail_rules' | 'scheduler'>>> {
   return apiRequest('/api/gm/automation/schedule', { method: 'POST', body: JSON.stringify(patch) })
 }

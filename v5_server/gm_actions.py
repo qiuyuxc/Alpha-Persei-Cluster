@@ -73,11 +73,13 @@ def require_item(db, item_id, count):
     return kind
 
 
-def grant(db, uid, item_id, count):
+def grant(db, uid, item_id, count, *, guard=None):
     require_item(db, item_id, count)
     ctx = context(db)
     ctx.uid = uid
     with db.transaction():
+        if guard is not None:
+            guard()
         summary = InventoryService.grant_item(ctx, uid, item_id, count=count, source="gm")
         frames = asset_frames(ctx, summary)
         _, balance = InventoryService.get_item_balance(db, uid, item_id)
@@ -193,13 +195,15 @@ def _backfill_portraits(db, uid, hero_ids, all_portraits=False):
     return changed
 
 
-def unlock(db, uid, hero_id=None, all_heroes=False):
+def unlock(db, uid, hero_id=None, all_heroes=False, *, guard=None):
     allowed = allowed_heroes()
     requested = sorted(allowed) if all_heroes else [hero_id]
     if not requested or any(hid not in allowed for hid in requested):
         raise ValueError("角色不在当前可用角色目录中")
     frames, changed = [], []
     with db.transaction():
+        if guard is not None:
+            guard()
         for hid in requested:
             row = db.query("SELECT unlock FROM hero WHERE uid=? AND id=?", (uid, hid))
             if row and int(row[0].get("unlock") or 0):
@@ -226,11 +230,13 @@ def unlock(db, uid, hero_id=None, all_heroes=False):
             "changed_portraits": portraits, "unlocked_portrait_count": len(portraits), "sync": sync(uid, frames)}
 
 
-def graduate(db, uid, hero_id):
+def graduate(db, uid, hero_id, *, guard=None):
     if hero_id not in allowed_heroes():
         raise ValueError("角色不在当前可用角色目录中")
     from hero_service import HeroService, _get_weapon_module_max_levels
     with db.transaction():
+        if guard is not None:
+            guard()
         row = db.query("SELECT unlock,skill_list FROM hero WHERE uid=? AND id=?", (uid, hero_id))
         if not row or not row[0].get("unlock"):
             raise ValueError("请先解锁该角色")

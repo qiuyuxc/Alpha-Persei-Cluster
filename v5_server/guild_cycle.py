@@ -1,16 +1,27 @@
 """Guild rift calendar: Monday 05:00 preparation, Saturday 05:00 challenge."""
+import os
 import time
 
 from lazy_timer import get_weekly_mon_5am_ts
 
 DAY = 86400
 KEY = 'gm.guild_rift_cycle.v1'
+TEST_START_ENV = 'AG_GUILD_BOSS_TEST_START_TS'
 
 
 def window(now_ts=None):
     now = int(time.time()) if now_ts is None else int(now_ts)
     week = get_weekly_mon_5am_ts(now)
-    return week, week + 5 * DAY, week + 7 * DAY
+    challenge = week + 5 * DAY
+    # An early test opening belongs only to its timestamp's preparation week.
+    # Leaving the setting in place cannot alter any later week's schedule.
+    try:
+        test_start = int(os.environ.get(TEST_START_ENV, '0'))
+    except ValueError:
+        test_start = 0
+    if week < test_start < challenge:
+        challenge = test_start
+    return week, challenge, week + 7 * DAY
 
 
 def phase(now_ts=None):

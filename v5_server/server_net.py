@@ -148,14 +148,33 @@ def _resolve_static_web_file(static_web_dir, request_path):
 
 _online_conns_lock = threading.Lock()
 _online_game_conns = {}  # uid (int) -> set of conn
+_game_conn_controls = {}  # socket ownership stays outside core.Connection
+
+
+def bind_game_conn(conn, close, peer=''):
+    now = int(time.time())
+    with _online_conns_lock:
+        _game_conn_controls[conn] = {'close': close, 'peer': peer,
+                                     'connected_at': now, 'last_seen_at': now}
+
+
+def mark_game_conn_seen(conn):
+    with _online_conns_lock:
+        if conn in _game_conn_controls:
+            _game_conn_controls[conn]['last_seen_at'] = int(time.time())
 
 
 def register_game_conn(conn, uid):
     """注册在线游戏 TCP 长连接（支持 uid 动态更新与多连接共存）。"""
-    if conn is None or not uid:
+    if conn is None or not uid or int(uid) <= 0:
         return
     with _online_conns_lock:
         uid_int = int(uid)
+        for previous, connections in list(_online_game_conns.items()):
+            if previous != uid_int:
+                connections.discard(conn)
+                if not connections:
+                    _online_game_conns.pop(previous, None)
         s = _online_game_conns.setdefault(uid_int, set())
         s.add(conn)
 
@@ -165,6 +184,7 @@ def unregister_game_conn(conn, uid=None):
     if conn is None:
         return
     with _online_conns_lock:
+        _game_conn_controls.pop(conn, None)
         if uid:
             uid_int = int(uid)
             s = _online_game_conns.get(uid_int)
@@ -186,6 +206,37 @@ def get_online_uids():
     """获取当前所有在线客户端 UID 列表。"""
     with _online_conns_lock:
         return list(_online_game_conns.keys())
+
+
+def game_presence():
+    """Snapshot actual authenticated game sockets; database watermarks may be stale."""
+    with _online_conns_lock:
+        result = {}
+        for uid, connections in _online_game_conns.items():
+            controls = [_game_conn_controls.get(conn, {}) for conn in connections]
+            result[uid] = {'online': bool(connections), 'connection_count': len(connections),
+                'ready': any(conn.initialized for conn in connections),
+                'connected_at': min((c.get('connected_at', 0) for c in controls), default=0),
+                'last_seen_at': max((c.get('last_seen_at', 0) for c in controls), default=0)}
+        return result
+
+
+def kick_game_connections(uid):
+    with _online_conns_lock:
+        connections = list(_online_game_conns.pop(int(uid), ()))
+        controls = [_game_conn_controls.pop(conn, {}) for conn in connections]
+        for conn in connections:
+            conn.initialized = False
+    closed = 0
+    for control in controls:
+        callback = control.get('close')
+        if callback:
+            try:
+                callback()
+                closed += 1
+            except OSError:
+                pass
+    return {'clients': len(connections), 'closed_connections': closed}
 
 
 def push_mail_notice(uid):
@@ -306,6 +357,13 @@ class GameHandler(socketserver.StreamRequestHandler):
                 return False
 
         conn.send_push = _send_push
+        def close_game_socket():
+            try:
+                self.request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self.request.close()
+        bind_game_conn(conn, close_game_socket, peer)
         register_game_conn(conn, conn.uid)
         fp = FrameParser("up")
         self.request.settimeout(1.0)
@@ -343,6 +401,7 @@ class GameHandler(socketserver.StreamRequestHandler):
                         continue
                     frames_in.append(up)
                 if frames_in:
+                    mark_game_conn_seen(conn)
                     self.server.core.log(
                         f"[TCP:{self.server.game_port}] 本次切帧 {len(frames_in)} 个 buf剩={len(fp.buf)}B "
                         f"cmds={[u['cmd'] for u in frames_in]}", "DEBUG")
