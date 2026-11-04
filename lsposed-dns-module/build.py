@@ -80,10 +80,15 @@ java_test = run(['java', '-cp', f'{BUILD / "classes"}:{BUILD / "tests"}',
                  'PolicyTest', ROOT / 'tests/domains.tsv'])
 gm_test = run(['java', '-cp', f'{BUILD / "classes"}:{BUILD / "tests"}', 'GmPagePolicyTest'])
 address_test = run(['java', '-cp', f'{BUILD / "classes"}:{BUILD / "tests"}', 'ServerAddressTest'])
+geometry_test = run(['java', '-cp', f'{BUILD / "classes"}:{BUILD / "tests"}', 'GmGeometryTest'])
+api_test = run(['java', '-cp', f'{BUILD / "classes"}:{BUILD / "tests"}', 'GmApiPolicyTest'])
+theme_test = run(['java', '-cp', f'{BUILD / "classes"}:{BUILD / "tests"}', 'GmThemePolicyTest'])
+quick_test = run(['java', '-cp', f'{BUILD / "classes"}:{BUILD / "tests"}', 'GmQuickRewardPolicyTest'])
+permission_test = run(['java', '-cp', f'{BUILD / "classes"}:{BUILD / "tests"}', 'GmPermissionPolicyTest'])
 run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
      ROOT / 'tests/policy_test.c', '-o', BUILD / 'policy-test'])
 native_test = run([BUILD / 'policy-test', ROOT / 'tests/domains.tsv'])
-print(java_test + native_test + gm_test + address_test, end='', flush=True)
+print(java_test + native_test + gm_test + address_test + geometry_test + api_test + theme_test + quick_test + permission_test, end='', flush=True)
 
 library = BUILD / 'libagredirect.so'
 if TERMUX:
@@ -170,6 +175,7 @@ with zipfile.ZipFile(apk) as archive, apk.open('rb') as source:
     assert archive.read('assets/xposed_init').strip() == b'io.github.qiuyuxc.agdns.MainHook'
     assert archive.read('assets/native_init').strip() == b'libagredirect.so'
     assert archive.read('lib/arm64-v8a/libagredirect.so') == elf
+    assert b'Landroid/webkit/WebView;' not in archive.read('classes.dex')
     assert not any('xposed/api' in name or name.endswith(('.p12', '.pass', '.jks')) for name in archive.namelist())
     for info in archive.infolist():
         if info.compress_type != zipfile.ZIP_STORED:
@@ -187,10 +193,12 @@ report = {'filename': apk.name, 'package': 'io.github.qiuyuxc.agdns', 'version':
           'official_downloads_passthrough': True,
           'default_sub_gm_url': 'https://127.0.0.1/web/sub_gm.html',
           'server_configurable': True,
-          'web_page_scale': {'landscape': 0.8, 'portrait': 1.0, 'drawer_size_changed': False},
+          'panel': {'implementation': 'native_android_views', 'placement': 'center', 'api_only': True, 'navigation': 'left', 'rewards': 'dual_columns_with_quick_presets', 'font_sp': 11, 'style': 'Miuix', 'manual_theme_persisted': True, 'right_account_status': True, 'reward_modes': ['quick', 'custom'], 'reward_mode_persisted': True},
+          'geometry_test': geometry_test.strip(), 'native_api_test': api_test.strip(), 'manual_theme_test': theme_test.strip(), 'quick_reward_test': quick_test.strip(), 'permission_feedback_test': permission_test.strip(),
           'gm_navigation_test': gm_test.strip(), 'server_address_test': address_test.strip(),
           'gm_handle': {'default_side': 'left', 'drag_axes': ['x', 'y'],
                         'edge_snapping': False, 'position_persistence': 'per_orientation',
+                        'window_type': 'TYPE_APPLICATION_PANEL', 'position_update': 'PopupWindow.update',
                         'bounds': 'visible_window_excluding_system_bars_and_display_cutout'},
           'system_overlay_permission': False,
           'java_policy_test': java_test.strip(), 'native_policy_test': native_test.strip(),

@@ -6,6 +6,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
+import android.graphics.Rect;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.os.Build;
 import android.view.Gravity;
@@ -13,8 +15,10 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.WindowInsets;
+import android.view.WindowManager;
+import android.view.ViewTreeObserver;
 import android.widget.Button;
-import android.widget.FrameLayout;
+import android.widget.PopupWindow;
 import android.widget.Toast;
 import java.util.WeakHashMap;
 import de.robv.android.xposed.XC_MethodHook;
@@ -46,6 +50,7 @@ public final class GameGmEntry implements Application.ActivityLifecycleCallbacks
         try {
             Intent intent = new Intent();
             intent.setClassName("io.github.qiuyuxc.agdns", "io.github.qiuyuxc.agdns.SubGmActivity");
+            intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
             activity.startActivity(intent);
         } catch (RuntimeException error) {
             Toast.makeText(activity, "无法打开子 GM，请确认模块已更新", Toast.LENGTH_SHORT).show();
@@ -58,15 +63,10 @@ public final class GameGmEntry implements Application.ActivityLifecycleCallbacks
             Handle existing = handles.get(activity);
             if (existing != null) { existing.show(); return; }
             View decor = activity.getWindow().getDecorView();
-            if (!(decor instanceof FrameLayout)) return;
-            FrameLayout root = (FrameLayout) decor;
             Button button = GmUi.handle(activity);
-            button.setContentDescription("打开子 GM；可自由拖动，自动记住位置");
-            FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(dp(activity, 48), dp(activity, 48), Gravity.TOP | Gravity.LEFT);
-            button.setVisibility(View.INVISIBLE);
-            root.addView(button, layout);
+            button.setContentDescription("打开辅助面板；可自由拖动，自动记住位置");
             button.setOnClickListener(v -> open(activity));
-            Handle handle = new Handle(activity, root, button);
+            Handle handle = new Handle(activity, decor, button);
             handles.put(activity, handle);
             handle.show();
         } catch (Throwable error) {
@@ -74,23 +74,39 @@ public final class GameGmEntry implements Application.ActivityLifecycleCallbacks
         }
     }
 
-    private static final class Handle implements View.OnTouchListener, View.OnLayoutChangeListener {
+    private static final class Handle implements View.OnTouchListener, View.OnLayoutChangeListener,
+            ViewTreeObserver.OnGlobalLayoutListener {
         final Activity activity;
-        final FrameLayout root;
+        final View root;
         final Button button;
+        final PopupWindow window;
         final SharedPreferences preferences;
         final int touchSlop;
         int pointer = -1;
         float startX, startY, originalX, originalY;
         float left, top, right, bottom;
+        float x, y;
+        int originX, originY;
+        String scope;
         boolean dragged, multiplePointers, visible;
 
-        Handle(Activity activity, FrameLayout root, Button button) {
+        Handle(Activity activity, View root, Button button) {
             this.activity = activity; this.root = root; this.button = button;
+            window = new PopupWindow(button, dp(activity, 48), dp(activity, 48), false);
+            window.setWindowLayoutType(WindowManager.LayoutParams.TYPE_APPLICATION_PANEL);
+            window.setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));
+            window.setTouchable(true); window.setOutsideTouchable(false);
+            window.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
+            window.setClippingEnabled(true); window.setAnimationStyle(0);
+            window.setElevation(dp(activity, 5));
+            if (Build.VERSION.SDK_INT >= 29) {
+                window.setIsLaidOutInScreen(true); window.setIsClippedToScreen(true);
+            }
             preferences = activity.getSharedPreferences("agdns_gm_position", Context.MODE_PRIVATE);
             touchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
             button.setOnTouchListener(this);
             root.addOnLayoutChangeListener(this);
+            root.getViewTreeObserver().addOnGlobalLayoutListener(this);
         }
 
         private String key() {
@@ -98,14 +114,10 @@ public final class GameGmEntry implements Application.ActivityLifecycleCallbacks
                     ? "landscape_" : "portrait_";
         }
 
-        private static float clamp(float value, float min, float max) {
-            return Math.max(min, Math.min(max, value));
-        }
-
         private float fraction(String name, float fallback) {
             try {
                 float value = preferences.getFloat(key() + name, fallback);
-                return Float.isNaN(value) || Float.isInfinite(value) ? fallback : clamp(value, 0, 1);
+                return GmGeometry.fraction(value, fallback);
             } catch (ClassCastException ignored) { return fallback; }
         }
 
@@ -127,46 +139,69 @@ public final class GameGmEntry implements Application.ActivityLifecycleCallbacks
                     }
                 }
             }
-            int width = button.getWidth() > 0 ? button.getWidth() : button.getLayoutParams().width;
-            int height = button.getHeight() > 0 ? button.getHeight() : button.getLayoutParams().height;
-            left = Math.max(root.getPaddingLeft(), insetLeft);
-            top = Math.max(root.getPaddingTop(), insetTop);
-            right = Math.max(left, root.getWidth() - Math.max(root.getPaddingRight(), insetRight) - width);
-            bottom = Math.max(top, root.getHeight() - Math.max(root.getPaddingBottom(), insetBottom) - height);
+            int[] origin = new int[2]; root.getLocationOnScreen(origin);
+            originX = origin[0]; originY = origin[1];
+            Rect visibleFrame = new Rect(); root.getWindowVisibleDisplayFrame(visibleFrame);
+            int size = Math.max(1, Math.min(dp(activity, 48), Math.min(
+                    root.getWidth() - insetLeft - insetRight, root.getHeight() - insetTop - insetBottom)));
+            window.setWidth(size); window.setHeight(size);
+            left = origin[0] + Math.max(root.getPaddingLeft(), insetLeft);
+            top = origin[1] + Math.max(root.getPaddingTop(), insetTop);
+            right = origin[0] + root.getWidth() - Math.max(root.getPaddingRight(), insetRight) - size;
+            bottom = origin[1] + root.getHeight() - Math.max(root.getPaddingBottom(), insetBottom) - size;
+            if (!visibleFrame.isEmpty()) {
+                left = Math.max(left, visibleFrame.left); top = Math.max(top, visibleFrame.top);
+                right = Math.min(right, visibleFrame.right - size);
+                bottom = Math.min(bottom, visibleFrame.bottom - size);
+            }
+            right = Math.max(left, right); bottom = Math.max(top, bottom);
         }
 
         private void move(float x, float y) {
-            // Absolute screen-side placement, with no edge snapping or axis lock.
-            button.setX(clamp(x, left, right));
-            button.setY(clamp(y, top, bottom));
+            this.x = GmGeometry.clamp(x, left, right); this.y = GmGeometry.clamp(y, top, bottom);
+            // Move the separate window itself so Unity cannot clip/repaint this View.
+            if (window.isShowing()) window.update(windowX(), windowY(), window.getWidth(), window.getHeight());
         }
+        private int windowX() { return GmGeometry.windowOffset(x, originX, Build.VERSION.SDK_INT >= 29); }
+        private int windowY() { return GmGeometry.windowOffset(y, originY, Build.VERSION.SDK_INT >= 29); }
 
         private void restore() {
-            if (!visible || root.getWidth() <= 0 || root.getHeight() <= 0) return;
+            if (!visible || root.getWidth() <= 0 || root.getHeight() <= 0 || !root.isAttachedToWindow()
+                    || root.getWindowToken() == null || activity.isFinishing() || activity.isDestroyed()) return;
             bounds();
+            scope = key();
             float defaultX = right > left ? Math.min(1, dp(activity, 12) / (right - left)) : 0;
             move(left + fraction("x", defaultX) * (right - left), top + fraction("y", 1f / 3f) * (bottom - top));
             button.setVisibility(View.VISIBLE);
-            button.bringToFront();
+            if (!window.isShowing()) {
+                button.animate().cancel(); button.setScaleX(1); button.setScaleY(1); button.setAlpha(1);
+                try { window.showAtLocation(root, Gravity.TOP | Gravity.LEFT, windowX(), windowY()); }
+                catch (RuntimeException error) {
+                    XposedBridge.log("AGDnsRedirect: GM window unavailable: " + error.getClass().getSimpleName());
+                }
+            }
         }
 
         private void save() {
             preferences.edit()
-                    .putFloat(key() + "x", right > left ? (button.getX() - left) / (right - left) : 0)
-                    .putFloat(key() + "y", bottom > top ? (button.getY() - top) / (bottom - top) : 0)
+                    .putFloat((scope == null ? key() : scope) + "x", GmGeometry.save(x, left, right))
+                    .putFloat((scope == null ? key() : scope) + "y", GmGeometry.save(y, top, bottom))
                     .apply();
         }
 
         void show() { visible = true; root.post(this::restore); }
-        void hide() { finishDrag(); visible = false; button.setVisibility(View.GONE); }
+        void hide() {
+            finishDrag(); visible = false;
+            try { window.dismiss(); } catch (RuntimeException ignored) { }
+        }
         void dispose() {
-            hide(); root.removeOnLayoutChangeListener(this); button.setOnTouchListener(null); root.removeView(button);
+            hide(); root.removeOnLayoutChangeListener(this); button.setOnTouchListener(null);
+            if (root.getViewTreeObserver().isAlive()) root.getViewTreeObserver().removeOnGlobalLayoutListener(this);
         }
 
         private void finishDrag() {
             if (pointer != -1 && dragged) save();
             pointer = -1; dragged = false; button.setPressed(false);
-            root.requestDisallowInterceptTouchEvent(false);
         }
 
         private void track(MotionEvent event) {
@@ -184,8 +219,8 @@ public final class GameGmEntry implements Application.ActivityLifecycleCallbacks
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     bounds(); pointer = event.getPointerId(0); dragged = false; multiplePointers = false;
-                    startX = event.getRawX(); startY = event.getRawY(); originalX = button.getX(); originalY = button.getY();
-                    button.setPressed(true); root.requestDisallowInterceptTouchEvent(true); return true;
+                    startX = event.getRawX(); startY = event.getRawY(); originalX = x; originalY = y;
+                    button.setPressed(true); return true;
                 case MotionEvent.ACTION_MOVE:
                     if (pointer != -1) track(event);
                     return true;
@@ -211,10 +246,10 @@ public final class GameGmEntry implements Application.ActivityLifecycleCallbacks
         @Override public void onLayoutChange(View view, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
             // Restore proportional positions independently for portrait and
             // landscape so rotation/resize cannot leave the handle offscreen.
-            pointer = -1; dragged = false; button.setPressed(false);
-            root.requestDisallowInterceptTouchEvent(false);
+            finishDrag();
             restore();
         }
+        @Override public void onGlobalLayout() { if (visible && pointer == -1) restore(); }
     }
 
     @Override public void onActivityPaused(Activity activity) {

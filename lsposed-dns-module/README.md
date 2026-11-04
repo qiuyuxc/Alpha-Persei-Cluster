@@ -1,5 +1,16 @@
 # 深空私服 DNS · LSPosed 模块
 
+v11 / 1.10：无权限和操作条件不满足时显示面板提示与 Toast。横屏右侧补充当前账号状态卡，显示等级、在线状态与权限等级。奖励页支持独立的快捷／自定义模式，并记住模式选择；快捷金币与材料从服务端物品目录匹配，不固定物品编号。11sp、Miuix 和手动日夜切换保留。
+
+
+v9 / 1.8：A 的左侧导航搭配 B 的横屏双栏快捷数量区，面板字号统一 11sp。右上角日夜按钮可手动切换并记住选择，长按可恢复跟随手机。表单内容在切换主题时保留。
+
+
+当前版本：v11 / 1.10。GM 入口改为独立的应用内窗口，主界面为居中原生辅助面板。奖励、养成、改密、玩家管理、轮换和补货直接使用服务器接口；更多管理功能可在浏览器打开。首次升级需在原生面板重新登录，已有服务器地址配置与 DNS 策略保留。
+
+新面板需要支持 `/api/auth`、`/api/sub-gm` 及对应管理员接口的服务端。账号权限继续由服务器验证。
+
+
 将深空之眼的登录与网关域名重定向到自己部署的服务器，并提供游戏内子 GM 抽屉。
 默认服务器为 `127.0.0.1`，可在模块设置页修改，无需重新编译。适用于 ARM64、Android 7+ 和支持 Native Hook / API 93+ 的 LSPosed。
 
@@ -44,3 +55,5 @@ python3 build.py --keystore /path/to/module.p12 \
 `tests/native_framework_test.c` 可在 Android 环境编译运行，通过模拟 LSPosed 注册验证真实 bionic 的 IPv4/IPv6、自定义地址、端口保留及官方 CDN 委托，不修改运行中游戏的 DNS。
 
 实现参考 [LSPosed Native Hook](https://github.com/LSPosed/LSPosed/wiki/Native-Hook)。界面参考 [Miuix](https://github.com/compose-miuix-ui/miuix)，使用 Android 原生 View。许可见仓库根目录 [LICENSE](../LICENSE)。
+
+无权限按钮仍可点击，会同时在面板和 Toast 中说明所需账号等级、功能停用或当前操作条件；不会发送对应发奖、解锁或培养请求。服务器拒绝的请求也会显示错误。

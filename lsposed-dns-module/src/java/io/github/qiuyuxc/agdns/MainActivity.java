@@ -20,7 +20,7 @@ public final class MainActivity extends Activity {
         content.setPadding(pad, pad * 2, pad, pad);
         content.setBackgroundColor(GmUi.fill(this));
         TextView title = new TextView(this);
-        title.setText("深空私服 DNS");
+        title.setText("深空之眼辅助");
         title.setTextSize(26);
         title.setTextColor(GmUi.text(this));
         content.addView(title);
@@ -61,7 +61,7 @@ public final class MainActivity extends Activity {
         saveLayout.topMargin = pad / 2;
         content.addView(save, saveLayout);
         content.addView(status);
-        Button gm = GmUi.button(this, "打开子 GM 后台", true);
+        Button gm = GmUi.button(this, "打开辅助面板", true);
         gm.setOnClickListener(v -> startActivity(new Intent(this, SubGmActivity.class)));
         LinearLayout.LayoutParams buttonLayout = new LinearLayout.LayoutParams(-1, GmUi.dp(this, 52));
         buttonLayout.setMargins(0, pad, 0, pad);
@@ -76,8 +76,8 @@ public final class MainActivity extends Activity {
                 + "\n\n请使用支持用户 CA 的游戏客户端，并安装自己服务器的 CA 证书。"
                 + "\n\n生效范围\n仅重定向登录接口 open.ys4fun.com 和游戏网关 prod-api-activity.ys4fun.com。"
                 + "\n\n资源下载\n官方资源、语音、安装包和 PV 视频保持官方直连。"
-                + "\n\n子 GM\nGM 按钮默认在左侧，可自由拖动到屏幕内任意位置，横竖屏分别记住位置。点击打开后台，关闭或返回即可回到游戏。使用管理员账号登录。"
-                + "\n不需要系统悬浮窗权限。网页尚未部署时会提示等待部署。"
+                + "\n\n辅助面板\nGM 入口默认在左侧，可自由拖动，横竖屏分别记住位置。点击打开居中原生面板，关闭或返回即可回到游戏。使用游戏账号登录，按等级开放奖励与养成功能。"
+                + "\n不需要系统悬浮窗权限。首次验证码注册可在面板中设置新密码。"
                 + "\n\n停用\n在 LSPosed 中停用本模块，再重启游戏。\n\nARM64 · LSPosed");
         content.addView(text);
         ScrollView scroll = new ScrollView(this);
