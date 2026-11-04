@@ -8,14 +8,17 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
-CORE = ("ServerAddress", "DnsMessage", "Ipv4Packet", "DnsTunnel", "DnsForwarder", "LocalServerConfig", "LocalForwarder", "NativeTunnel", "TcpSockets")
-TESTS = ("DnsMessageTest", "DnsTunnelTest", "DnsForwarderTest", "LocalForwarderTest", "TcpSocketsTest")
+CORE = ("ServerAddress", "DnsMessage", "Ipv4Packet", "DnsTunnel", "DnsForwarder", "LocalServerConfig", "LocalForwarder", "NativeTunnel", "TcpSockets",
+        "GmGeometry", "GmApiPolicy", "GmThemePolicy", "GmQuickRewardPolicy", "GmPermissionPolicy", "GmEndpoint", "GmOverlayPolicy")
+TESTS = ("DnsMessageTest", "DnsTunnelTest", "DnsForwarderTest", "LocalForwarderTest", "TcpSocketsTest",
+         "GmGeometryTest", "GmApiPolicyTest", "GmThemePolicyTest", "GmQuickRewardPolicyTest", "GmPermissionPolicyTest", "GmHelperPolicyTest")
 
 
 def run(command, log):
@@ -34,7 +37,7 @@ def clean_directory(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--test-only", action="store_true", help="Run pure Java DNS tests without Android SDK")
+    parser.add_argument("--test-only", action="store_true", help="Run host connection/GM tests without Android SDK")
     parser.add_argument("--sdk", type=Path, default=os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT"))
     parser.add_argument("--termux-prefix", type=Path, help="Use Termux aapt2/d8/apksigner with SDK android.jar")
     parser.add_argument("--keystore", type=Path, help="PKCS12 key; omit for an unsigned APK")
@@ -57,6 +60,9 @@ def main():
     for name in TESTS:
         results[name] = run(["java", "-cp", classes, name], f"{name}.log").strip()
         print(results[name], flush=True)
+    results["GmOverlayLifecycleTest"] = run([sys.executable, ROOT / "tests/verify_overlay.py"],
+                                            "GmOverlayLifecycleTest.log").strip()
+    print(results["GmOverlayLifecycleTest"], flush=True)
     (BUILD / "test-result.json").write_text(json.dumps({"tests": results, "passed": True}, indent=2) + "\n")
     if args.test_only:
         return
@@ -153,6 +159,17 @@ def main():
         "redirected_hosts": ["open.ys4fun.com", "prod-api-activity.ys4fun.com"],
         "local_mode": {"virtual_sdk_ip": "10.111.0.3", "tcp_ports": {"443": 8443, "80": 8080},
                        "gateway_game_battle": "direct loopback", "tls": "opaque byte forwarding"},
+        "gm_panel": {"implementation": "native_android_views", "placement": "center", "font_sp": 11,
+                     "style": "Miuix", "navigation": "left", "right_account_status": True,
+                     "reward_modes": ["quick", "custom"], "manual_theme_persisted": True,
+                     "permission_feedback": "inline_and_toast", "server": "connection_settings",
+                     "local_https_origin": "https://127.0.0.1:8443"},
+        "gm_overlay": {"permission": "SYSTEM_ALERT_WINDOW", "optional": True,
+                       "panel_window": "system_overlay", "launches_activity_on_click": False,
+                       "keyboard_input": True, "child_dialogs": "same_overlay_type",
+                       "dismiss_on": ["close", "back", "outside", "lock", "disconnect", "disabled", "permission_revoked"],
+                       "lifecycle": "active_connection_only", "drag_axes": ["x", "y"],
+                       "position_persistence": "per_orientation", "hidden_when_panel_open_or_locked": True},
         "tests": results, "device_validation": {"performed_by_build": False},
     }
     (DIST / "validation.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.VpnService;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -29,7 +30,7 @@ public final class MainActivity extends Activity {
     private static final int VPN_REQUEST = 10, NOTIFICATION_REQUEST = 11;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private MiuixUi ui;
-    private TextView state, detail, addressSummary, stateMark, modeSummary;
+    private TextView state, detail, addressSummary, stateMark, modeSummary, overlaySummary;
     private Button toggle, launch;
     private String pendingServer;
     private boolean pendingLocal;
@@ -122,6 +123,11 @@ public final class MainActivity extends Activity {
         addressSummary = ui.row(server, "服务器地址", "点击填写 IPv4 地址", () -> {
             if (localMode()) showLocalGuide(); else editAddress(null);
         });
+        ui.section(body, "辅助面板");
+        LinearLayout gm = ui.card(body);
+        ui.row(gm, "打开辅助面板", "账号状态、快捷奖励与管理", () -> GmEntry.open(this));
+        ui.divider(gm);
+        overlaySummary = ui.row(gm, "游戏内悬浮按钮", "未开启", this::configureOverlay);
         ui.section(body, "连接准备");
         LinearLayout preparation = ui.card(body);
         ui.row(preparation, "使用说明", "用户 CA 版游戏、证书与连接步骤", this::showGuide);
@@ -133,7 +139,7 @@ public final class MainActivity extends Activity {
         LinearLayout support = ui.card(body);
         ui.row(support, "连接诊断", "查看运行状态与解析计数", this::showDiagnostics);
         ui.gap(body, 24);
-        TextView footer = ui.text("1.1", 12, ui.secondary, false);
+        TextView footer = ui.text("1.2", 12, ui.secondary, false);
         footer.setGravity(Gravity.CENTER); body.addView(footer);
         setContentView(scroll);
         if (saved != null) {
@@ -146,6 +152,35 @@ public final class MainActivity extends Activity {
 
     private String server() { return getPreferences(MODE_PRIVATE).getString("server", ""); }
     private boolean localMode() { return getPreferences(MODE_PRIVATE).getBoolean("local", false); }
+
+    private void configureOverlay() {
+        LinearLayout content = ui.column();
+        Dialog dialog = ui.dialog("游戏内悬浮按钮", content);
+        ui.row(content, "显示悬浮按钮", "连接开启后显示，可拖动并记住位置", () -> {
+            getSharedPreferences(GmOverlay.PREFERENCES, MODE_PRIVATE).edit().putBoolean("enabled", true).apply();
+            dialog.dismiss();
+            if (!Settings.canDrawOverlays(this)) requestOverlayPermission();
+            syncOverlay(); render();
+        });
+        ui.divider(content);
+        ui.row(content, "隐藏悬浮按钮", "仍可从助手首页打开面板", () -> {
+            getSharedPreferences(GmOverlay.PREFERENCES, MODE_PRIVATE).edit().putBoolean("enabled", false).apply();
+            dialog.dismiss(); syncOverlay(); render();
+        });
+        ui.divider(content);
+        ui.row(content, "悬浮窗权限", "前往系统设置允许显示在其他应用上层", () -> {
+            dialog.dismiss(); requestOverlayPermission();
+        });
+        dialog.show();
+    }
+    private void requestOverlayPermission() {
+        open(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
+    }
+    private void syncOverlay() {
+        if (!ConnectionService.status.running) return;
+        try { startService(new Intent(this, ConnectionService.class).setAction(ConnectionService.GM_REFRESH)); }
+        catch (RuntimeException error) { ui.message("悬浮按钮未更新", "请重新开启连接，或从助手首页打开辅助面板。"); }
+    }
 
     private void chooseMode() {
         if (ConnectionService.status.running || permissionPending) {
@@ -315,9 +350,12 @@ public final class MainActivity extends Activity {
         modeSummary.setText(local ? "手机本地" : "外部服务器");
         String saved = server(); addressSummary.setText(local ? "本机 · Termux"
                 : saved.isEmpty() ? "点击填写 IPv4 地址" : saved);
+        overlaySummary.setText(!GmOverlay.enabled(this) ? "未开启"
+                : !Settings.canDrawOverlays(this) ? "等待悬浮窗权限"
+                : current.running ? "已开启 · 点击设置" : "已允许 · 连接开启后显示");
     }
 
-    @Override protected void onResume() { super.onResume(); handler.post(refresh); }
+    @Override protected void onResume() { super.onResume(); syncOverlay(); handler.post(refresh); }
     @Override protected void onPause() { handler.removeCallbacks(refresh); super.onPause(); }
     @Override protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);

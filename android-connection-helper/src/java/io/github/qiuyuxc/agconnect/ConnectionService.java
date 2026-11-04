@@ -5,6 +5,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.content.pm.ServiceInfo;
 import android.net.ConnectivityManager;
 import android.net.LinkProperties;
@@ -46,6 +47,7 @@ public final class ConnectionService extends VpnService {
     public static final String GAME = "com.yongshi.tenojo.ys";
     public static final String START = "io.github.qiuyuxc.agconnect.START";
     public static final String STOP = "io.github.qiuyuxc.agconnect.STOP";
+    public static final String GM_REFRESH = "io.github.qiuyuxc.agconnect.GM_REFRESH";
     private static final String CHANNEL = "connection";
     private static final int NOTIFICATION = 1;
     private static final String TAG = "AGConnect";
@@ -67,6 +69,7 @@ public final class ConnectionService extends VpnService {
     private ConnectivityManager connectivity;
     private boolean watching;
     private TunnelRunner runner;
+    private GmOverlay gmOverlay;
 
     private final ConnectivityManager.NetworkCallback callback = new ConnectivityManager.NetworkCallback() {
         @Override public void onAvailable(Network network) { refresh(); }
@@ -86,6 +89,11 @@ public final class ConnectionService extends VpnService {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && GM_REFRESH.equals(intent.getAction())) {
+            refreshGm();
+            if (runner == null) stopSelf();
+            return START_NOT_STICKY;
+        }
         if (intent == null || !START.equals(intent.getAction())) {
             stopConnection("未连接", "连接已停止。");
             return START_NOT_STICKY;
@@ -143,6 +151,30 @@ public final class ConnectionService extends VpnService {
                 ? "本机转发已开启。请保持 Termux 服务端运行。"
                 : "服务器 " + address.host) + "\n请完全退出游戏后重新打开；实际登录结果以游戏为准。");
         foreground(local ? "连接已开启 · 手机本地" : "连接已开启 · " + address.host);
+        refreshGm();
+    }
+
+    private void refreshGm() {
+        try {
+            if (!status.running || !GmOverlay.enabled(this)) {
+                closeGm(); return;
+            }
+            if (gmOverlay == null) gmOverlay = new GmOverlay(this);
+            gmOverlay.refresh();
+        } catch (RuntimeException error) {
+            Log.w(TAG, "GM overlay unavailable", error);
+            closeGm();
+        }
+    }
+    private void closeGm() {
+        GmOverlay previous = gmOverlay; gmOverlay = null;
+        if (previous != null) {
+            try { previous.dispose(); } catch (RuntimeException error) { Log.w(TAG, "GM overlay cleanup failed", error); }
+        }
+    }
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        if (gmOverlay != null) gmOverlay.configurationChanged();
     }
 
     private PendingIntent openApp() {
@@ -244,6 +276,7 @@ public final class ConnectionService extends VpnService {
     }
 
     private void stopConnection(String title, String detail) {
+        closeGm();
         closeRunner();
         stopWatching();
         status = new Status(false, title, detail == null ? "请重新开启连接。" : detail);
@@ -256,6 +289,7 @@ public final class ConnectionService extends VpnService {
     }
 
     @Override public void onDestroy() {
+        closeGm();
         closeRunner();
         stopWatching();
         if (status.running) status = new Status(false, "未连接", "连接已停止。");
