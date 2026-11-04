@@ -2,17 +2,17 @@
 
 独立 Android 应用，通过系统本地 VPN 为 `com.yongshi.tenojo.ys` 提供进服连接。外部服务器模式将 `open.ys4fun.com` 和 `prod-api-activity.ys4fun.com` 指向填写的 IPv4；手机本地模式将这两个域名的 TCP 443/80 转发到同机 Termux 的 8443/8080。资源域名沿用当前网络的 DNS。
 
-助手无需 root 或 LSPosed。当前源码为 **1.2.1**，带有原生 GM 面板和可选悬浮按钮，修复游戏内点击悬浮按钮切回助手的问题；已发布的连接版本为 1.1。发行包为 ARM64，构建声明最低 Android 7。外部模式沿用 1.0 的 DNS 连接方式，2026-10-31 已有用户确认进服和开启、停止正常。2026-11-01，手机本地模式在 vivo（Android 16 / API 36）通过实测同机登录，以及战场清扫关卡的战斗和结算；1.2.1 保留这些连接逻辑。
+助手无需 root 或 LSPosed。当前正式版为 **1.2.1**，带有原生 GM 面板和可选悬浮按钮，游戏内悬浮面板已通过实机验证。发行包为 ARM64，构建声明最低 Android 7。外部模式沿用 1.0 的 DNS 连接方式，2026-10-31 已有用户确认进服和开启、停止正常。2026-11-01，手机本地模式在 vivo（Android 16 / API 36）通过实测同机登录，以及战场清扫关卡的战斗和结算；1.2.1 保留这些连接逻辑。
 
 ## 使用
 
 1. 按 [Android 安装与适配说明](../docs/ANDROID_SETUP.md) 安装自己生成并签名的用户 CA 版游戏，以及自己服务器的根 CA。当前游戏适配版本为 `v0.308.301`。只安装助手无法解决原版游戏的证书信任问题。
-2. 从 [1.1 发行页](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-connect-v1.1) 下载并安装 `AlphaPersei-Connect-v1.1.apk`，或按下方说明自行构建签名。仅使用外部模式的非 ARM64 设备可继续使用 [1.0](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-connect-v1.0)。
+2. 从 [1.2.1 发行页](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-connect-v1.2.1) 下载并安装 `AlphaPersei-Connect-v1.2.1.apk`，或按下方说明自行构建签名。仅使用外部模式的非 ARM64 设备可继续使用 [1.0](https://github.com/qiuyuxc/Alpha-Persei-Cluster/releases/tag/android-connect-v1.0)。
 3. 关闭其他 VPN，将系统“私人 DNS / 私有 DNS”设为“关闭”。Android 同一用户只能启用一个 VPN；本助手会占用这个位置。
 4. 外部模式填写手机可访问的服务器 **IPv4**；手机本地模式按下节准备服务端后，选择“连接方式 → 手机本地”。点击“开启连接”，允许系统 VPN 请求。
 5. 完全退出游戏后重新打开。后台保留助手，“连接已开启”只表示本地 DNS 服务正在运行，实际登录结果以游戏为准。
 
-1.1 沿用原签名和应用包名，ARM64 设备可覆盖既有版本并保留服务器配置。默认仍选择外部模式。点击“停止连接”会主动关闭 VPN 接口与本地转发，界面恢复“未连接”；之后可再次开启。
+1.2.1 沿用原签名和应用包名，ARM64 设备可覆盖既有版本并保留服务器配置。默认仍选择外部模式。点击“停止连接”会主动关闭 VPN 接口与本地转发，界面恢复“未连接”；之后可再次开启。
 
 停止连接后再修改服务器地址。网络断开时会等待恢复；切换 Wi-Fi/移动网络时重新选取底层 DNS。若系统停止服务或其他 VPN 收回权限，需要重新开启。不要启用“无 VPN 时阻止连接”或强制常开 VPN，否则分流直连可能被系统拦截。
 
@@ -42,13 +42,13 @@ python v5_server/main.py --android-local --db /path/to/account.db --res-version 
 
 界面参考 [Compose Miuix](https://github.com/compose-miuix-ui/miuix) 的默认配色、大标题、16dp 圆角卡片、设置列表与按钮，支持跟随系统深色模式。首页展示连接状态与服务器地址，解析计数放在“连接诊断”中。
 
-使用 Android 原生 View 实现，未引入 Compose Miuix 运行库或 MIUI 专有资源；字体使用系统字体。小屏与大字体可滚动，服务器地址弹窗保留旋转前的输入，弹窗与状态栏遵循明暗主题。视觉与交互仍需真机确认。
+使用 Android 原生 View 实现，未引入 Compose Miuix 运行库或 MIUI 专有资源；字体使用系统字体。小屏与大字体可滚动，服务器地址弹窗保留旋转前的输入，弹窗与状态栏遵循明暗主题。
 
 ## 构建
 
 需要 Python 3.9+、JDK 17+、Android SDK Platform 35 与 Build-Tools，无需 Gradle。本地 TCP 组件使用 Android NDK r27+，或 ARM64 Termux clang。
 
-连接、GM 和悬浮窗专项测试（不需要 SDK 或设备；悬浮窗检查使用本机窗口模拟，游戏显示及键盘交互仍需真机验证）：
+连接、GM 和悬浮窗专项测试（不需要 SDK 或设备；包含本机窗口模拟检查）：
 
 ```sh
 python3 android-connection-helper/build.py --test-only
