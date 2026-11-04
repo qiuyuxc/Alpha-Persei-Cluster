@@ -1,0 +1,14 @@
+{
+  "GuildData.lua": [
+    "5b0da51feb68ca63ddc0d843a5b66c292b2a0311e0e677129aa53e50a6d9dd8f",
+    "e7604cc33ffb7a7ff5422b19da8c5b26c13bd7f3442e16f07c9659de6808e6a7"
+  ],
+  "GuildBossAssistantHeadItemView.lua": [
+    "22896a7aab9cb8cce2261262cd0f594576e42eecc82ee3bbab9e64174cc84de5",
+    "7bd504587d8dfe4a3bc3da56840154565358b26522e12fcc905d700f825034e6"
+  ],
+  "GuildBossSelectHeroProxy.lua": [
+    "f2d8d992ca96b75c00f8909937ead3f719dd054ab7358ae9aeffb4e39d695163",
+    "7bf2085065342c6189960eaa91154045ecf5b4ae841fff2d2f716f0da80407b7"
+  ]
+}

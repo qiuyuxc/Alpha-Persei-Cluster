@@ -1,0 +1,1149 @@
+{
+  "client": {
+    "app": 307,
+    "build": 321
+  },
+  "legacy_pools": {
+    "2110301": 1015,
+    "10163": 1076,
+    "10003": 1199,
+    "3060304": 1055,
+    "10133": 1042,
+    "2090302": 1076,
+    "2090301": 1061,
+    "10103": 1028,
+    "2070604": 1158,
+    "2060302": 1075,
+    "2060301": 1049,
+    "2110602": 1015,
+    "3070303": 1060,
+    "10043": 1081,
+    "3010304": 1074,
+    "10013": 1111,
+    "3080303": 1150,
+    "10143": 1075,
+    "2060604": 1049,
+    "3020303": 1055,
+    "10113": 1111,
+    "2070301": 1158,
+    "2080605": 1060,
+    "2200301": 1074,
+    "10083": 1041,
+    "2040302": 1199,
+    "4040303": 1061,
+    "3030304": 1076,
+    "4020304": 1049,
+    "10023": 1094,
+    "10153": 1071,
+    "2100301": 1150,
+    "2100303": 1199,
+    "3090303": 1076,
+    "2100304": 1028,
+    "3110303": 1075,
+    "2240301": 1081,
+    "3040302": 1049,
+    "3110302": 1060,
+    "10123": 1132,
+    "3090302": 1061,
+    "2080301": 1060,
+    "2080303": 1074,
+    "2080302": 1041,
+    "2040301": 1055,
+    "10093": 1052,
+    "2090604": 1061,
+    "3040303": 1150,
+    "10073": 1119,
+    "2070302": 1132,
+    "3010303": 1138,
+    "2110303": 1111,
+    "10063": 1042,
+    "2050301": 1138,
+    "3050305": 1075,
+    "3050306": 1015,
+    "2100602": 1150,
+    "3100302": 1015,
+    "3060303": 1074,
+    "2090305": 1111,
+    "2110304": 1081,
+    "10033": 1138
+  },
+  "video_paths": {
+    "4030302": "SofdecAsset/function/draw/1284_start.usm",
+    "4030301": "SofdecAsset/function/draw/1047_start.usm",
+    "3000602": "SofdecAsset/function/draw/1095_start.usm",
+    "3000303": "SofdecAsset/function/draw/1095_start.usm",
+    "3070601": "SofdecAsset/function/draw/1089_start.usm",
+    "3010601": "SofdecAsset/function/draw/1284_start.usm",
+    "3060301": "SofdecAsset/function/draw/1020_start.usm",
+    "3060302": "SofdecAsset/function/draw/1156_start.usm",
+    "3080601": "SofdecAsset/function/draw/1248_start.usm",
+    "3070301": "SofdecAsset/function/draw/1089_start.usm",
+    "4050302": "SofdecAsset/function/draw/1043_start.usm",
+    "3010302": "SofdecAsset/function/draw/1284_start.usm",
+    "3080301": "SofdecAsset/function/draw/1248_start.usm",
+    "4070601": "SofdecAsset/function/draw/1137_start.usm",
+    "3090601": "SofdecAsset/function/draw/1133_start.usm",
+    "5020302": "SofdecAsset/function/draw/1095_start.usm",
+    "3020301": "SofdecAsset/function/draw/1197_start.usm",
+    "5000302": "SofdecAsset/function/draw/1170_start.usm",
+    "5000602": "SofdecAsset/function/draw/1170_start.usm",
+    "5000301": "SofdecAsset/function/draw/1054_start.usm",
+    "5000601": "SofdecAsset/function/draw/1054_start.usm",
+    "4070303": "SofdecAsset/function/draw/1248_start.usm",
+    "4080303": "SofdecAsset/function/draw/1020_start.usm",
+    "3090301": "SofdecAsset/function/draw/1133_start.usm",
+    "4080601": "SofdecAsset/function/draw/1053_start.usm",
+    "4070301": "SofdecAsset/function/draw/1137_start.usm",
+    "4060303": "SofdecAsset/function/draw/1133_start.usm",
+    "4060302": "SofdecAsset/function/draw/1012_start.usm",
+    "4060301": "SofdecAsset/function/draw/1194_start.usm",
+    "4060601": "SofdecAsset/function/draw/1194_start.usm",
+    "4050602": "SofdecAsset/function/draw/1043_start.usm",
+    "4050301": "SofdecAsset/function/draw/1044_start.usm",
+    "4050601": "SofdecAsset/function/draw/1044_start.usm",
+    "4040302": "SofdecAsset/function/draw/1022_start.usm",
+    "4040301": "SofdecAsset/function/draw/1083_start.usm",
+    "4040601": "SofdecAsset/function/draw/1083_start.usm",
+    "4030303": "SofdecAsset/function/draw/1095_start.usm",
+    "4030601": "SofdecAsset/function/draw/1047_start.usm",
+    "4020303": "SofdecAsset/function/draw/1248_start.usm",
+    "4020301": "SofdecAsset/function/draw/1045_start.usm",
+    "4000302": "SofdecAsset/function/draw/1073_start.usm",
+    "4020601": "SofdecAsset/function/draw/1045_start.usm",
+    "4020602": "SofdecAsset/function/draw/1046_start.usm",
+    "3100303": "SofdecAsset/function/draw/1022_start.usm",
+    "4010302": "SofdecAsset/function/draw/1020_start.usm",
+    "4080302": "SofdecAsset/function/draw/1083_start.usm",
+    "4010303": "SofdecAsset/function/draw/1089_start.usm",
+    "4080301": "SofdecAsset/function/draw/1053_start.usm",
+    "4020302": "SofdecAsset/function/draw/1046_start.usm",
+    "4000602": "SofdecAsset/function/draw/1073_start.usm",
+    "3050602": "SofdecAsset/function/draw/1021_start.usm",
+    "3040301": "SofdecAsset/function/draw/1022_start.usm",
+    "3110301": "SofdecAsset/function/draw/1012_start.usm",
+    "3110601": "SofdecAsset/function/draw/1012_start.usm",
+    "3050304": "SofdecAsset/function/draw/1021_start.usm",
+    "3020601": "SofdecAsset/function/draw/1197_start.usm",
+    "3080302": "SofdecAsset/function/draw/1284_start.usm",
+    "3060601": "SofdecAsset/function/draw/1020_start.usm",
+    "3060602": "SofdecAsset/function/draw/1156_start.usm",
+    "3040601": "SofdecAsset/function/draw/1022_start.usm",
+    "3070302": "SofdecAsset/function/draw/1095_start.usm"
+  },
+  "catalog": {
+    "4030302": {
+      "hero": 1284,
+      "start": "SofdecAsset/function/draw/1284_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1284_loop.usm"
+    },
+    "4030301": {
+      "hero": 1047,
+      "start": "SofdecAsset/function/draw/1047_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1047.usm",
+        "SofdecAsset/function/pool/pool_1047.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1047_loop.usm"
+    },
+    "2110301": {
+      "hero": 1015,
+      "start": "SofdecAsset/function/draw/1015_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1015_loop.usm"
+    },
+    "10163": {
+      "hero": 1076,
+      "start": "SofdecAsset/function/draw/1076_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1076_loop.usm"
+    },
+    "10003": {
+      "hero": 1199,
+      "start": "SofdecAsset/function/draw/1199_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1199_loop.usm"
+    },
+    "3000602": {
+      "hero": 1095,
+      "start": "SofdecAsset/function/draw/1095_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1095_loop.usm"
+    },
+    "3000303": {
+      "hero": 1095,
+      "start": "SofdecAsset/function/draw/1095_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1095_loop.usm"
+    },
+    "3070601": {
+      "hero": 1089,
+      "start": "SofdecAsset/function/draw/1089_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1089.usm",
+        "SofdecAsset/function/pool/pool_1089.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1089_loop.usm"
+    },
+    "3060304": {
+      "hero": 1055,
+      "start": "SofdecAsset/function/draw/1055_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1055_loop.usm"
+    },
+    "3010601": {
+      "hero": 1284,
+      "start": "SofdecAsset/function/draw/1284_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1284_loop.usm"
+    },
+    "10133": {
+      "hero": 1042,
+      "start": "SofdecAsset/function/draw/1042_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1042_loop.usm"
+    },
+    "3060301": {
+      "hero": 1020,
+      "start": "SofdecAsset/function/draw/1020_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1020.usm",
+        "SofdecAsset/function/pool/pool_1020.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1020_loop.usm"
+    },
+    "3060302": {
+      "hero": 1156,
+      "start": "SofdecAsset/function/draw/1156_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1156.usm",
+        "SofdecAsset/function/pool/pool_1156.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1156_loop.usm"
+    },
+    "2090302": {
+      "hero": 1076,
+      "start": "SofdecAsset/function/draw/1076_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1076_loop.usm"
+    },
+    "2090301": {
+      "hero": 1061,
+      "start": "SofdecAsset/function/draw/1061_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1061_loop.usm"
+    },
+    "10103": {
+      "hero": 1028,
+      "start": "SofdecAsset/function/draw/1028_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1028_loop.usm"
+    },
+    "2070604": {
+      "hero": 1158,
+      "start": "SofdecAsset/function/draw/1158_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1158_loop.usm"
+    },
+    "2060302": {
+      "hero": 1075,
+      "start": "SofdecAsset/function/draw/1075_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1075_loop.usm"
+    },
+    "2060301": {
+      "hero": 1049,
+      "start": "SofdecAsset/function/draw/1049_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1049_loop.usm"
+    },
+    "2110602": {
+      "hero": 1015,
+      "start": "SofdecAsset/function/draw/1015_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1015_loop.usm"
+    },
+    "3070303": {
+      "hero": 1060,
+      "start": "SofdecAsset/function/draw/1060_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1060_loop.usm"
+    },
+    "3080601": {
+      "hero": 1248,
+      "start": "SofdecAsset/function/draw/1248_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1248.usm",
+        "SofdecAsset/function/pool/pool_1248.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1248_loop.usm"
+    },
+    "3070301": {
+      "hero": 1089,
+      "start": "SofdecAsset/function/draw/1089_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1089.usm",
+        "SofdecAsset/function/pool/pool_1089.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1089_loop.usm"
+    },
+    "10043": {
+      "hero": 1081,
+      "start": "SofdecAsset/function/draw/1081_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1081_loop.usm"
+    },
+    "4050302": {
+      "hero": 1043,
+      "start": "SofdecAsset/function/draw/1043_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1043.usm",
+        "SofdecAsset/function/pool/pool_1043.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1043_loop.usm"
+    },
+    "3010304": {
+      "hero": 1074,
+      "start": "SofdecAsset/function/draw/1074_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1074_loop.usm"
+    },
+    "3010302": {
+      "hero": 1284,
+      "start": "SofdecAsset/function/draw/1284_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1284_loop.usm"
+    },
+    "10013": {
+      "hero": 1111,
+      "start": "SofdecAsset/function/draw/1111_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1111_loop.usm"
+    },
+    "3080301": {
+      "hero": 1248,
+      "start": "SofdecAsset/function/draw/1248_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1248.usm",
+        "SofdecAsset/function/pool/pool_1248.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1248_loop.usm"
+    },
+    "4070601": {
+      "hero": 1137,
+      "start": "SofdecAsset/function/draw/1137_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1137.usm",
+        "SofdecAsset/function/pool/pool_1137.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1137_loop.usm"
+    },
+    "3080303": {
+      "hero": 1150,
+      "start": "SofdecAsset/function/draw/1150_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1150_loop.usm"
+    },
+    "10143": {
+      "hero": 1075,
+      "start": "SofdecAsset/function/draw/1075_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1075_loop.usm"
+    },
+    "3090601": {
+      "hero": 1133,
+      "start": "SofdecAsset/function/draw/1133_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1133.usm",
+        "SofdecAsset/function/pool/pool_1133.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1133_loop.usm"
+    },
+    "2060604": {
+      "hero": 1049,
+      "start": "SofdecAsset/function/draw/1049_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1049_loop.usm"
+    },
+    "5020302": {
+      "hero": 1095,
+      "start": "SofdecAsset/function/draw/1095_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1095_loop.usm"
+    },
+    "3020301": {
+      "hero": 1197,
+      "start": "SofdecAsset/function/draw/1197_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1197_loop.usm"
+    },
+    "3020303": {
+      "hero": 1055,
+      "start": "SofdecAsset/function/draw/1055_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1055_loop.usm"
+    },
+    "10113": {
+      "hero": 1111,
+      "start": "SofdecAsset/function/draw/1111_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1111_loop.usm"
+    },
+    "5000302": {
+      "hero": 1170,
+      "start": "SofdecAsset/function/draw/1170_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1170.usm",
+        "SofdecAsset/function/pool/pool_1170.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1170_loop.usm"
+    },
+    "5000602": {
+      "hero": 1170,
+      "start": "SofdecAsset/function/draw/1170_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1170.usm",
+        "SofdecAsset/function/pool/pool_1170.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1170_loop.usm"
+    },
+    "5000301": {
+      "hero": 1054,
+      "start": "SofdecAsset/function/draw/1054_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1054.usm",
+        "SofdecAsset/function/pool/pool_1054.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1054_loop.usm"
+    },
+    "5000601": {
+      "hero": 1054,
+      "start": "SofdecAsset/function/draw/1054_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1054.usm",
+        "SofdecAsset/function/pool/pool_1054.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1054_loop.usm"
+    },
+    "4070303": {
+      "hero": 1248,
+      "start": "SofdecAsset/function/draw/1248_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1248.usm",
+        "SofdecAsset/function/pool/pool_1248.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1248_loop.usm"
+    },
+    "2070301": {
+      "hero": 1158,
+      "start": "SofdecAsset/function/draw/1158_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1158_loop.usm"
+    },
+    "4080303": {
+      "hero": 1020,
+      "start": "SofdecAsset/function/draw/1020_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1020.usm",
+        "SofdecAsset/function/pool/pool_1020.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1020_loop.usm"
+    },
+    "2080605": {
+      "hero": 1060,
+      "start": "SofdecAsset/function/draw/1060_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1060_loop.usm"
+    },
+    "2200301": {
+      "hero": 1074,
+      "start": "SofdecAsset/function/draw/1074_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1074_loop.usm"
+    },
+    "3090301": {
+      "hero": 1133,
+      "start": "SofdecAsset/function/draw/1133_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1133.usm",
+        "SofdecAsset/function/pool/pool_1133.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1133_loop.usm"
+    },
+    "10083": {
+      "hero": 1041,
+      "start": "SofdecAsset/function/draw/1041_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1041_loop.usm"
+    },
+    "4080601": {
+      "hero": 1053,
+      "start": "SofdecAsset/function/draw/1053_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1053.usm",
+        "SofdecAsset/function/pool/pool_1053.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1053_loop.usm"
+    },
+    "4070301": {
+      "hero": 1137,
+      "start": "SofdecAsset/function/draw/1137_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1137.usm",
+        "SofdecAsset/function/pool/pool_1137.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1137_loop.usm"
+    },
+    "4060303": {
+      "hero": 1133,
+      "start": "SofdecAsset/function/draw/1133_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1133.usm",
+        "SofdecAsset/function/pool/pool_1133.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1133_loop.usm"
+    },
+    "4060302": {
+      "hero": 1012,
+      "start": "SofdecAsset/function/draw/1012_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1012.usm",
+        "SofdecAsset/function/pool/pool_1012.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1012_loop.usm"
+    },
+    "4060301": {
+      "hero": 1194,
+      "start": "SofdecAsset/function/draw/1194_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1194.usm",
+        "SofdecAsset/function/pool/pool_1194.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1194_loop.usm"
+    },
+    "4060601": {
+      "hero": 1194,
+      "start": "SofdecAsset/function/draw/1194_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1194.usm",
+        "SofdecAsset/function/pool/pool_1194.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1194_loop.usm"
+    },
+    "4050602": {
+      "hero": 1043,
+      "start": "SofdecAsset/function/draw/1043_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1043.usm",
+        "SofdecAsset/function/pool/pool_1043.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1043_loop.usm"
+    },
+    "4050301": {
+      "hero": 1044,
+      "start": "SofdecAsset/function/draw/1044_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1044.usm",
+        "SofdecAsset/function/pool/pool_1044.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1044_loop.usm"
+    },
+    "4050601": {
+      "hero": 1044,
+      "start": "SofdecAsset/function/draw/1044_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1044.usm",
+        "SofdecAsset/function/pool/pool_1044.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1044_loop.usm"
+    },
+    "2040302": {
+      "hero": 1199,
+      "start": "SofdecAsset/function/draw/1199_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1199_loop.usm"
+    },
+    "4040303": {
+      "hero": 1061,
+      "start": "SofdecAsset/function/draw/1061_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1061_loop.usm"
+    },
+    "3030304": {
+      "hero": 1076,
+      "start": "SofdecAsset/function/draw/1076_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1076_loop.usm"
+    },
+    "4040302": {
+      "hero": 1022,
+      "start": "SofdecAsset/function/draw/1022_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1022_loop.usm"
+    },
+    "4040301": {
+      "hero": 1083,
+      "start": "SofdecAsset/function/draw/1083_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1083.usm",
+        "SofdecAsset/function/pool/pool_1083.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1083_loop.usm"
+    },
+    "4040601": {
+      "hero": 1083,
+      "start": "SofdecAsset/function/draw/1083_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1083.usm",
+        "SofdecAsset/function/pool/pool_1083.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1083_loop.usm"
+    },
+    "4030303": {
+      "hero": 1095,
+      "start": "SofdecAsset/function/draw/1095_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1095_loop.usm"
+    },
+    "4030601": {
+      "hero": 1047,
+      "start": "SofdecAsset/function/draw/1047_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1047.usm",
+        "SofdecAsset/function/pool/pool_1047.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1047_loop.usm"
+    },
+    "4020303": {
+      "hero": 1248,
+      "start": "SofdecAsset/function/draw/1248_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1248.usm",
+        "SofdecAsset/function/pool/pool_1248.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1248_loop.usm"
+    },
+    "4020304": {
+      "hero": 1049,
+      "start": "SofdecAsset/function/draw/1049_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1049_loop.usm"
+    },
+    "10023": {
+      "hero": 1094,
+      "start": "SofdecAsset/function/draw/1094_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1094_loop.usm"
+    },
+    "4020301": {
+      "hero": 1045,
+      "start": "SofdecAsset/function/draw/1045_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1045.usm",
+        "SofdecAsset/function/pool/pool_1045.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1045_loop.usm"
+    },
+    "4000302": {
+      "hero": 1073,
+      "start": "SofdecAsset/function/draw/1073_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1073.usm",
+        "SofdecAsset/function/pool/pool_1073.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1073_loop.usm"
+    },
+    "4020601": {
+      "hero": 1045,
+      "start": "SofdecAsset/function/draw/1045_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1045.usm",
+        "SofdecAsset/function/pool/pool_1045.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1045_loop.usm"
+    },
+    "4020602": {
+      "hero": 1046,
+      "start": "SofdecAsset/function/draw/1046_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1046.usm",
+        "SofdecAsset/function/pool/pool_1046.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1046_loop.usm"
+    },
+    "3100303": {
+      "hero": 1022,
+      "start": "SofdecAsset/function/draw/1022_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1022_loop.usm"
+    },
+    "4010302": {
+      "hero": 1020,
+      "start": "SofdecAsset/function/draw/1020_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1020.usm",
+        "SofdecAsset/function/pool/pool_1020.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1020_loop.usm"
+    },
+    "4080302": {
+      "hero": 1083,
+      "start": "SofdecAsset/function/draw/1083_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1083.usm",
+        "SofdecAsset/function/pool/pool_1083.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1083_loop.usm"
+    },
+    "4010303": {
+      "hero": 1089,
+      "start": "SofdecAsset/function/draw/1089_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1089.usm",
+        "SofdecAsset/function/pool/pool_1089.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1089_loop.usm"
+    },
+    "4080301": {
+      "hero": 1053,
+      "start": "SofdecAsset/function/draw/1053_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1053.usm",
+        "SofdecAsset/function/pool/pool_1053.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1053_loop.usm"
+    },
+    "10153": {
+      "hero": 1071,
+      "start": "SofdecAsset/function/draw/1071_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1071_loop.usm"
+    },
+    "4020302": {
+      "hero": 1046,
+      "start": "SofdecAsset/function/draw/1046_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1046.usm",
+        "SofdecAsset/function/pool/pool_1046.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1046_loop.usm"
+    },
+    "4000602": {
+      "hero": 1073,
+      "start": "SofdecAsset/function/draw/1073_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1073.usm",
+        "SofdecAsset/function/pool/pool_1073.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1073_loop.usm"
+    },
+    "2100301": {
+      "hero": 1150,
+      "start": "SofdecAsset/function/draw/1150_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1150_loop.usm"
+    },
+    "2100303": {
+      "hero": 1199,
+      "start": "SofdecAsset/function/draw/1199_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1199_loop.usm"
+    },
+    "3090303": {
+      "hero": 1076,
+      "start": "SofdecAsset/function/draw/1076_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1076_loop.usm"
+    },
+    "2100304": {
+      "hero": 1028,
+      "start": "SofdecAsset/function/draw/1028_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1028_loop.usm"
+    },
+    "3050602": {
+      "hero": 1021,
+      "start": "SofdecAsset/function/draw/1021_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1021_loop.usm"
+    },
+    "3110303": {
+      "hero": 1075,
+      "start": "SofdecAsset/function/draw/1075_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1075_loop.usm"
+    },
+    "2240301": {
+      "hero": 1081,
+      "start": "SofdecAsset/function/draw/1081_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1081_loop.usm"
+    },
+    "3040302": {
+      "hero": 1049,
+      "start": "SofdecAsset/function/draw/1049_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1049_loop.usm"
+    },
+    "3110302": {
+      "hero": 1060,
+      "start": "SofdecAsset/function/draw/1060_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1060_loop.usm"
+    },
+    "3040301": {
+      "hero": 1022,
+      "start": "SofdecAsset/function/draw/1022_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1022_loop.usm"
+    },
+    "10123": {
+      "hero": 1132,
+      "start": "SofdecAsset/function/draw/1132_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1132_loop.usm"
+    },
+    "3110301": {
+      "hero": 1012,
+      "start": "SofdecAsset/function/draw/1012_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1012.usm",
+        "SofdecAsset/function/pool/pool_1012.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1012_loop.usm"
+    },
+    "3110601": {
+      "hero": 1012,
+      "start": "SofdecAsset/function/draw/1012_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1012.usm",
+        "SofdecAsset/function/pool/pool_1012.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1012_loop.usm"
+    },
+    "3090302": {
+      "hero": 1061,
+      "start": "SofdecAsset/function/draw/1061_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1061_loop.usm"
+    },
+    "2080301": {
+      "hero": 1060,
+      "start": "SofdecAsset/function/draw/1060_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1060_loop.usm"
+    },
+    "2080303": {
+      "hero": 1074,
+      "start": "SofdecAsset/function/draw/1074_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1074_loop.usm"
+    },
+    "2080302": {
+      "hero": 1041,
+      "start": "SofdecAsset/function/draw/1041_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1041_loop.usm"
+    },
+    "2040301": {
+      "hero": 1055,
+      "start": "SofdecAsset/function/draw/1055_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1055_loop.usm"
+    },
+    "3050304": {
+      "hero": 1021,
+      "start": "SofdecAsset/function/draw/1021_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1021_loop.usm"
+    },
+    "10093": {
+      "hero": 1052,
+      "start": "SofdecAsset/function/draw/1052_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1052_loop.usm"
+    },
+    "2090604": {
+      "hero": 1061,
+      "start": "SofdecAsset/function/draw/1061_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1061_loop.usm"
+    },
+    "3040303": {
+      "hero": 1150,
+      "start": "SofdecAsset/function/draw/1150_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1150_loop.usm"
+    },
+    "10073": {
+      "hero": 1119,
+      "start": "SofdecAsset/function/draw/1119_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1119_loop.usm"
+    },
+    "3020601": {
+      "hero": 1197,
+      "start": "SofdecAsset/function/draw/1197_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1197_loop.usm"
+    },
+    "2070302": {
+      "hero": 1132,
+      "start": "SofdecAsset/function/draw/1132_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1132_loop.usm"
+    },
+    "3010303": {
+      "hero": 1138,
+      "start": "SofdecAsset/function/draw/1138_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1138_loop.usm"
+    },
+    "2110303": {
+      "hero": 1111,
+      "start": "SofdecAsset/function/draw/1111_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1111_loop.usm"
+    },
+    "3080302": {
+      "hero": 1284,
+      "start": "SofdecAsset/function/draw/1284_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1284_loop.usm"
+    },
+    "3060601": {
+      "hero": 1020,
+      "start": "SofdecAsset/function/draw/1020_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1020.usm",
+        "SofdecAsset/function/pool/pool_1020.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1020_loop.usm"
+    },
+    "3060602": {
+      "hero": 1156,
+      "start": "SofdecAsset/function/draw/1156_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [
+        "SofdecAsset/function/pool/pool_1156.usm",
+        "SofdecAsset/function/pool/pool_1156.usm"
+      ],
+      "loop": "SofdecAsset/function/draw/1156_loop.usm"
+    },
+    "10063": {
+      "hero": 1042,
+      "start": "SofdecAsset/function/draw/1042_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1042_loop.usm"
+    },
+    "2050301": {
+      "hero": 1138,
+      "start": "SofdecAsset/function/draw/1138_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1138_loop.usm"
+    },
+    "3050305": {
+      "hero": 1075,
+      "start": "SofdecAsset/function/draw/1075_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1075_loop.usm"
+    },
+    "3040601": {
+      "hero": 1022,
+      "start": "SofdecAsset/function/draw/1022_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1022_loop.usm"
+    },
+    "3050306": {
+      "hero": 1015,
+      "start": "SofdecAsset/function/draw/1015_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1015_loop.usm"
+    },
+    "2100602": {
+      "hero": 1150,
+      "start": "SofdecAsset/function/draw/1150_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1150_loop.usm"
+    },
+    "3100302": {
+      "hero": 1015,
+      "start": "SofdecAsset/function/draw/1015_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1015_loop.usm"
+    },
+    "3060303": {
+      "hero": 1074,
+      "start": "SofdecAsset/function/draw/1074_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1074_loop.usm"
+    },
+    "3070302": {
+      "hero": 1095,
+      "start": "SofdecAsset/function/draw/1095_start.usm",
+      "renderer": "original_with_current_hero_intro",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1095_loop.usm"
+    },
+    "2090305": {
+      "hero": 1111,
+      "start": "SofdecAsset/function/draw/1111_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1111_loop.usm"
+    },
+    "2110304": {
+      "hero": 1081,
+      "start": "SofdecAsset/function/draw/1081_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1081_loop.usm"
+    },
+    "10033": {
+      "hero": 1138,
+      "start": "SofdecAsset/function/draw/1138_start.usm",
+      "renderer": "current_role_template",
+      "original_pv_paths": [],
+      "loop": "SofdecAsset/function/draw/1138_loop.usm"
+    }
+  },
+  "native_normal_pools": [
+    3100301,
+    3100601,
+    4000301,
+    4000601,
+    4010301,
+    4010601,
+    4050303,
+    4050304,
+    4070302,
+    5010301,
+    5010302,
+    5010303,
+    5010601,
+    5020301,
+    5020303,
+    5020601
+  ],
+  "unsupported_pools": [
+    10053
+  ]
+}
